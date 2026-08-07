@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 
 type Tab = "verify" | "today" | "register" | "changes" | "settings";
 type Source = "official" | "demo" | "pending";
@@ -36,6 +37,7 @@ type AbnRecord = {
   source: Source;
   note?: string;
   officialHistory?: OfficialAbnHistory;
+  bankDetails?: BankDetails;
 };
 
 type Account = {
@@ -58,6 +60,11 @@ type ContractDocument = {
   uploadedAt: string;
 };
 
+type BankDetailsCandidate = {
+  details: BankDetails;
+  fileNames: string[];
+};
+
 type DetectedEntity = {
   abn: string;
   contractName: string;
@@ -65,6 +72,7 @@ type DetectedEntity = {
   fileNames: string[];
   context: string;
   uploadedAt: string;
+  bankDetailCandidates: BankDetailsCandidate[];
 };
 
 type ContractCheck = {
@@ -82,6 +90,10 @@ type ContractCheck = {
   official: AbnRecord;
   issues: string[];
   reviewed: boolean;
+  fileBankDetails?: BankDetails;
+  fileBankDetailCandidates?: BankDetailsCandidate[];
+  savedBankDetails?: BankDetails;
+  bankDetailStatus: "not-found" | "first-seen" | "match" | "mismatch" | "multiple";
 };
 
 type TodayFileRef = {
@@ -116,13 +128,14 @@ type AbnHistoryEntry = {
   id: string;
   abn: string;
   recordedAt: string;
-  event: "Company ABN saved" | "Added to register" | "Imported from file" | "Register update";
+  event: "Company ABN saved" | "Added to register" | "Imported from file" | "Register update" | "Bank details updated" | "Bank details removed";
   entityName: string;
   status: AbnRecord["status"];
   gstRegistered: boolean | null;
   state: string;
   postcode: string;
   source: Source;
+  bankDetails?: BankDetails;
 };
 
 const STORAGE = {
@@ -417,8 +430,40 @@ function OfficialHistorySection({ title, rows, empty }: { title: string; rows: O
   </section>;
 }
 
+function BankDetailsFields({ details, empty = "No bank details saved" }: { details?: BankDetails; empty?: string }) {
+  if (!details) return <p className="bank-empty">{empty}</p>;
+  return <dl className="bank-detail-grid">
+    {details.accountName && <div><dt>Account name</dt><dd>{details.accountName}</dd></div>}
+    {details.bankName && <div><dt>Bank name</dt><dd>{details.bankName}</dd></div>}
+    {details.bsb && <div><dt>BSB</dt><dd>{formatBsb(details.bsb)}</dd></div>}
+    {details.accountNumber && <div><dt>Account number</dt><dd>{details.accountNumber}</dd></div>}
+  </dl>;
+}
+
+function BankVerification({ check }: { check: ContractCheck }) {
+  if (check.bankDetailStatus === "not-found") return null;
+  if (check.bankDetailStatus === "match" && check.fileBankDetails) {
+    return <div className="bank-match-summary"><span>BANK</span><div><b>Bank details match</b><small>BSB {formatBsb(check.fileBankDetails.bsb)} · Account {check.fileBankDetails.accountNumber}</small></div><em>Match</em></div>;
+  }
+
+  const candidates = check.fileBankDetailCandidates ?? [];
+  const isMultiple = check.bankDetailStatus === "multiple";
+  return <div className={`bank-verification ${check.bankDetailStatus}`}>
+    <div className="bank-verification-head"><div><span>BANK</span><b>{isMultiple ? "Multiple bank accounts found" : check.bankDetailStatus === "first-seen" ? "Confirm new bank details" : "Bank details changed"}</b></div><em>{isMultiple ? `${candidates.length} accounts` : check.bankDetailStatus === "first-seen" ? "First record" : "Mismatch"}</em></div>
+    {isMultiple ? <div className="bank-candidate-list">{candidates.map((candidate) => <section key={bankDetailsKey(candidate.details)}><div><h4>{candidate.fileNames.join(", ")}</h4><span>Uploaded file</span></div><BankDetailsFields details={candidate.details} /></section>)}</div> : check.bankDetailStatus === "first-seen" ? <section className="bank-single-panel"><BankDetailsFields details={check.fileBankDetails} /></section> : <div className="bank-comparison">
+      <section className="bank-panel"><h4>Uploaded file</h4><BankDetailsFields details={check.fileBankDetails} empty="No bank details found" /></section>
+      <section className="bank-panel"><h4>Saved record</h4><BankDetailsFields details={check.savedBankDetails} /></section>
+    </div>}
+    <p className={check.bankDetailStatus === "first-seen" ? "bank-confirmation" : "bank-confirmation danger"}>{isMultiple ? "Different accounts were found for this ABN. Review the source files separately; Records will not be changed from this batch." : check.bankDetailStatus === "first-seen" ? "Confirm the BSB and account number against the original file, then tick Reviewed." : "Confirm this payment-detail change before ticking Reviewed. Approval will replace the saved account."}</p>
+  </div>;
+}
+
 function checkIsVerified(check: ContractCheck) {
   return check.issues.length === 0 || check.reviewed;
+}
+
+function isEntityNameIssue(issue: string) {
+  return issue === "Company name was not found in the file" || /^File name “.*” does not match the registered entity name$/.test(issue);
 }
 
 function TodaySection({ title, subtitle, items, onVerify, onOpenFile }: { title: string; subtitle: string; items: TodayReview[]; onVerify?: (id: string) => void; onOpenFile: (file: TodayFileRef) => void }) {
@@ -474,6 +519,11 @@ export default function Home() {
   const [activeCheckIndex, setActiveCheckIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
+  const [editingBankRecord, setEditingBankRecord] = useState<AbnRecord | null>(null);
+  const [bankDraft, setBankDraft] = useState<BankDetails>({ accountName: "", bankName: "", bsb: "", accountNumber: "" });
+  const [bankEditError, setBankEditError] = useState("");
+  const [editingCheckNameId, setEditingCheckNameId] = useState<string | null>(null);
+  const [checkNameDraft, setCheckNameDraft] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -538,10 +588,20 @@ export default function Home() {
   const detectedEntities = useMemo(() => {
     const map = new Map<string, DetectedEntity>();
     documents.forEach((document) => {
+      const documentBankDetails = extractBankDetails(document.text);
       document.abns.forEach((abn) => {
         const context = contextForAbn(document.text, abn);
         const name = claimsFromContext(context).contractName;
         const existing = map.get(abn);
+        const bankDetailCandidates = new Map((existing?.bankDetailCandidates ?? []).map((candidate) => [bankDetailsKey(candidate.details), candidate]));
+        if (documentBankDetails) {
+          const key = bankDetailsKey(documentBankDetails);
+          const previousCandidate = bankDetailCandidates.get(key);
+          bankDetailCandidates.set(key, {
+            details: documentBankDetails,
+            fileNames: [...new Set([...(previousCandidate?.fileNames ?? []), document.name])],
+          });
+        }
         map.set(abn, {
           abn,
           contractName: existing?.contractName || name,
@@ -549,6 +609,7 @@ export default function Home() {
           fileNames: [...new Set([...(existing?.fileNames ?? []), document.name])],
           context: existing?.context || context,
           uploadedAt: existing?.uploadedAt || document.uploadedAt,
+          bankDetailCandidates: [...bankDetailCandidates.values()],
         });
       });
     });
@@ -593,8 +654,58 @@ export default function Home() {
       state: record.state,
       postcode: record.postcode,
       source: record.source,
+      bankDetails: record.bankDetails,
     }));
     setHistory((previous) => [...entries, ...previous].slice(0, 500));
+  }
+
+  function openBankEditor(record: AbnRecord) {
+    setEditingBankRecord(record);
+    setBankDraft(record.bankDetails ?? { accountName: "", bankName: "", bsb: "", accountNumber: "" });
+    setBankEditError("");
+  }
+
+  function closeBankEditor() {
+    setEditingBankRecord(null);
+    setBankEditError("");
+  }
+
+  function saveBankDetails(event: FormEvent) {
+    event.preventDefault();
+    if (!editingBankRecord) return;
+    const bsb = onlyDigits(bankDraft.bsb);
+    const accountNumber = onlyDigits(bankDraft.accountNumber);
+    if (bsb.length !== 6) {
+      setBankEditError("Enter a valid 6-digit BSB.");
+      return;
+    }
+    if (accountNumber.length < 4 || accountNumber.length > 16) {
+      setBankEditError("Enter an account number between 4 and 16 digits.");
+      return;
+    }
+    const updated: AbnRecord = {
+      ...editingBankRecord,
+      bankDetails: {
+        accountName: bankDraft.accountName.trim(),
+        bankName: bankDraft.bankName.trim(),
+        bsb,
+        accountNumber,
+      },
+    };
+    setRegister((records) => records.map((record) => record.abn === updated.abn ? updated : record));
+    addHistoryEntries([{ ...updated, lastChecked: new Date().toISOString() }], "Bank details updated");
+    setNotice(`Bank details updated for ${updated.entityName}.`);
+    closeBankEditor();
+  }
+
+  function removeBankDetails() {
+    if (!editingBankRecord?.bankDetails) return;
+    if (!window.confirm(`Remove the saved bank details for ${editingBankRecord.entityName}?`)) return;
+    const updated = { ...editingBankRecord, bankDetails: undefined };
+    setRegister((records) => records.map((record) => record.abn === updated.abn ? updated : record));
+    addHistoryEntries([{ ...updated, lastChecked: new Date().toISOString() }], "Bank details removed");
+    setNotice(`Bank details removed for ${updated.entityName}.`);
+    closeBankEditor();
   }
 
   async function toggleAbnHistory(abn: string) {
@@ -607,7 +718,7 @@ export default function Home() {
     if (!previous || previous.officialHistory || !apiConfigured || loadingHistoryAbns.includes(abn)) return;
     setLoadingHistoryAbns((items) => [...items, abn]);
     try {
-      const current = await lookupAbn(abn);
+      const current = { ...(await lookupAbn(abn)), bankDetails: previous.bankDetails };
       const logs = compareRecord(previous, current);
       setRegister((records) => records.map((record) => record.abn === abn ? current : record));
       if (logs.length) setChanges((items) => [...logs, ...items].slice(0, 200));
@@ -788,6 +899,18 @@ export default function Home() {
     for (const detected of detectedEntities) {
       try {
         const official = await lookupAbn(detected.abn);
+        const savedBankDetails = register.find((record) => record.abn === detected.abn)?.bankDetails;
+        const fileBankDetails = detected.bankDetailCandidates[0]?.details;
+        const multipleBankDetails = detected.bankDetailCandidates.length > 1;
+        const bankDetailStatus: ContractCheck["bankDetailStatus"] = !fileBankDetails
+          ? "not-found"
+          : multipleBankDetails
+            ? "multiple"
+            : !savedBankDetails
+              ? "first-seen"
+              : bankDetailsMatch(fileBankDetails, savedBankDetails)
+                ? "match"
+                : "mismatch";
         const extractedClaims = claimsFromContext(detected.context);
         const claims = { ...extractedClaims, contractName: detected.contractName };
         const issues: string[] = [];
@@ -797,7 +920,11 @@ export default function Home() {
           issues.push(`File name “${claims.contractName}” does not match the registered entity name`);
         if (claims.contractLocation && (!officialLocation || normalizeLocation(claims.contractLocation) !== normalizeLocation(officialLocation)))
           issues.push(`File location ${claims.contractLocation} does not match the ABN Lookup location ${officialLocation || "unavailable"}`);
+        if (multipleBankDetails) issues.push("Multiple different bank details were found across the uploaded files for this ABN.");
+        else if (bankDetailStatus === "first-seen") issues.push("First bank details found for this ABN. Confirm the BSB and account number before saving.");
+        else if (bankDetailStatus === "mismatch") issues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
         if (official.source === "pending") issues.push("Official API is not connected. Add a GUID and verify again.");
+        const recordToSave = { ...official, bankDetails: multipleBankDetails ? savedBankDetails : fileBankDetails ?? savedBankDetails };
         nextChecks.push({
           id: crypto.randomUUID(),
           batchId,
@@ -806,9 +933,13 @@ export default function Home() {
           uploadedAt: detected.uploadedAt,
           checkedAt: new Date().toISOString(),
           abn: detected.abn,
-          official,
+          official: recordToSave,
           issues,
           reviewed: false,
+          fileBankDetails,
+          fileBankDetailCandidates: detected.bankDetailCandidates,
+          savedBankDetails,
+          bankDetailStatus,
           ...claims,
         });
       } catch (error) {
@@ -830,6 +961,30 @@ export default function Home() {
 
   function setCheckReviewed(checkId: string, reviewed: boolean) {
     setChecks((previous) => previous.map((check) => check.id === checkId ? { ...check, reviewed } : check));
+  }
+
+  function startEditingCheckName(check: ContractCheck) {
+    setEditingCheckNameId(check.id);
+    setCheckNameDraft(check.contractName);
+  }
+
+  function saveCheckName(checkId: string) {
+    const nextName = checkNameDraft.trim();
+    setChecks((previous) => previous.map((check) => {
+      if (check.id !== checkId) return check;
+      const issues = check.issues.filter((issue) => !isEntityNameIssue(issue));
+      if (!nextName) issues.unshift("Company name was not found in the file");
+      else if (check.official.entityName && compareCompanyNames(nextName, check.official.entityName) === "mismatch")
+        issues.unshift(`File name “${nextName}” does not match the registered entity name`);
+      return { ...check, contractName: nextName, issues, reviewed: false };
+    }));
+    setEditingCheckNameId(null);
+    setCheckNameDraft("");
+  }
+
+  function cancelEditingCheckName() {
+    setEditingCheckNameId(null);
+    setCheckNameDraft("");
   }
 
   function addVerifiedRecords(items: AbnRecord[]) {
@@ -916,7 +1071,7 @@ export default function Home() {
     for (let index = 0; index < register.length; index += 1) {
       const previous = register[index];
       try {
-        let current = await lookupAbn(previous.abn);
+        let current = { ...(await lookupAbn(previous.abn)), bankDetails: previous.bankDetails };
         if (simulate && index === 0) current = { ...current, gstRegistered: !current.gstRegistered, lastChecked: new Date().toISOString() };
         logs.push(...compareRecord(previous, current));
         refreshed.push(current);
@@ -966,6 +1121,12 @@ export default function Home() {
         const rawAbn = row.ABN ?? row.abn ?? row["ABN号码"] ?? Object.values(row)[0];
         const abn = onlyDigits(String(rawAbn ?? ""));
         if (!isValidAbn(abn)) return null;
+        const bankDetails = {
+          bankName: String(row["Bank name"] ?? row["Bank Name"] ?? "").trim(),
+          accountName: String(row["Account name"] ?? row["Account Name"] ?? "").trim(),
+          bsb: onlyDigits(String(row.BSB ?? row.bsb ?? "")),
+          accountNumber: onlyDigits(String(row["Account number"] ?? row["Account Number"] ?? row["Account no"] ?? "")),
+        };
         return {
           abn,
           entityName: String(row["Entity name"] ?? row["Entity Name"] ?? row["实体名称"] ?? "Pending update"),
@@ -978,6 +1139,7 @@ export default function Home() {
           postcode: String(row.Postcode ?? row["邮编"] ?? ""),
           lastChecked: "",
           source: "pending" as const,
+          bankDetails: bankDetails.bsb || bankDetails.accountNumber ? bankDetails : undefined,
         } satisfies AbnRecord;
       }).filter((item): item is AbnRecord => Boolean(item));
       setRegister((previous) => {
@@ -1006,6 +1168,10 @@ export default function Home() {
       "Entity type": item.entityType,
       State: item.state,
       Postcode: item.postcode,
+      "Bank name": item.bankDetails?.bankName ?? "",
+      "Account name": item.bankDetails?.accountName ?? "",
+      BSB: item.bankDetails ? formatBsb(item.bankDetails.bsb) : "",
+      "Account number": item.bankDetails?.accountNumber ?? "",
       "Last checked": item.lastChecked,
     }));
     const workbook = XLSX.utils.book_new();
@@ -1124,7 +1290,7 @@ export default function Home() {
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
                       <dl>
-                        <div><dt>Entity name</dt><dd>{safeContractName}</dd></div>
+                        <div><dt>Entity name</dt><dd className="file-entity-value">{editingCheckNameId === check.id ? <form className="entity-name-editor" onSubmit={(event) => { event.preventDefault(); saveCheckName(check.id); }}><input autoFocus value={checkNameDraft} onChange={(event) => setCheckNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") cancelEditingCheckName(); }} aria-label="Detected entity name" /><button type="submit" aria-label="Save detected entity name">Save</button><button type="button" onClick={cancelEditingCheckName} aria-label="Cancel entity name edit">Cancel</button></form> : <><span>{safeContractName}</span><button type="button" onClick={() => startEditingCheckName(check)}>Edit</button></>}</dd></div>
                         <div><dt>ABN</dt><dd>{formatAbn(check.abn)}</dd></div>
                         <div><dt>Location</dt><dd>{check.contractLocation || "Not found in file"}</dd></div>
                       </dl>
@@ -1138,11 +1304,11 @@ export default function Home() {
                       </dl>
                     </section>
                   </div>
+                  <BankVerification check={check} />
                   <div className="registration-facts">
-                    <div className={check.official.gstRegistered === null ? "registration-fact" : check.official.gstRegistered ? "registration-fact gst-active" : "registration-fact gst-inactive"}><span>GST</span><div><small>GST registration</small><b>{check.official.gstRegistered === null ? "Pending lookup" : check.official.gstRegistered ? "Registered" : "Not registered"}</b><p>{check.official.gstFrom ? `Effective from ${check.official.gstFrom}` : "No current registration date"}</p></div></div>
-                    <div className="registration-fact abn-date"><span>ABN</span><div><small>{check.official.status === "Active" ? "ABN registration date" : "ABN status effective date"}</small><b>{check.official.statusFrom || "Unavailable"}</b><p>{check.official.status === "Active" ? "Active ABN" : `Current status: ${check.official.status}`}</p></div></div>
+                    <div className={check.official.gstRegistered === null ? "registration-fact" : check.official.gstRegistered ? "registration-fact gst-active" : "registration-fact gst-inactive"}><span>GST</span><div><small>GST registration</small><b>{check.official.gstRegistered === null ? "Pending lookup" : check.official.gstRegistered ? "Registered" : "Not registered"}</b>{check.official.gstFrom && <p>From {check.official.gstFrom}</p>}</div></div>
+                    <div className="registration-fact abn-date"><span>ABN</span><div><small>{check.official.status === "Active" ? "ABN registration date" : "ABN status effective date"}</small><b>{check.official.statusFrom || "Unavailable"}</b></div></div>
                   </div>
-                  <div className="source-line"><span>Checked against {sourceLabel}</span><time>{dateTime(check.checkedAt)}</time></div>
                 </div>;
               })}</div>}
             </article>
@@ -1161,7 +1327,7 @@ export default function Home() {
         {tab === "register" && <div className="page-content">
           <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll(false)} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
           <div className="table-meta"><span>Showing {filteredRegister.length} of {register.length} records · {register.filter((item) => item.status === "Active").length} Active</span><span>Last bulk update: {dateTime(lastRefresh)}</span></div>
-          <div className="table-wrap"><table><thead><tr><th>ABN / Entity name</th><th>ABN status</th><th>GST</th><th>Entity type</th><th>Main location</th><th>Last checked</th><th aria-label="Actions" /></tr></thead><tbody>{filteredRegister.map((item) => {
+          <div className="table-wrap"><table><thead><tr><th>ABN / Entity name</th><th>ABN status</th><th>GST</th><th>Entity type</th><th>Main location</th><th>Bank details</th><th>Last checked</th><th aria-label="Actions" /></tr></thead><tbody>{filteredRegister.map((item) => {
             const isExpanded = expandedAbns.includes(item.abn);
             const isHistoryLoading = loadingHistoryAbns.includes(item.abn);
             const nameHistory = item.officialHistory?.entityNames?.length ? item.officialHistory.entityNames : item.entityName ? [{ value: item.entityName, from: item.statusFrom, to: "" }] : [];
@@ -1178,7 +1344,7 @@ export default function Home() {
               ...latestRegisterUpdate,
             ];
             const activity: { id: string; at: string; title: string; detail: string; kind: "snapshot" | "check" | "change" }[] = [
-              ...visibleHistory.map((entry) => ({ id: entry.id, at: entry.recordedAt, title: entry.event, detail: `${entry.entityName || "Entity name unavailable"} · ${entry.status} · GST ${entry.gstRegistered === null ? "pending" : entry.gstRegistered ? "registered" : "not registered"}${entry.state ? ` · ${entry.state} ${entry.postcode}` : ""}`, kind: "snapshot" as const })),
+              ...visibleHistory.map((entry) => ({ id: entry.id, at: entry.recordedAt, title: entry.event, detail: `${entry.entityName || "Entity name unavailable"} · ${entry.status} · GST ${entry.gstRegistered === null ? "pending" : entry.gstRegistered ? "registered" : "not registered"}${entry.state ? ` · ${entry.state} ${entry.postcode}` : ""}${entry.bankDetails ? " · Bank details saved" : ""}`, kind: "snapshot" as const })),
               ...checks.filter((check) => check.abn === item.abn).map((check) => ({ id: check.id, at: check.checkedAt, title: "Contract verification", detail: `${check.fileName} · ${check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"} found` : "No discrepancies found"}`, kind: "check" as const })),
               ...changes.filter((change) => change.abn === item.abn).map((change) => ({ id: change.id, at: change.changedAt, title: "Recorded change", detail: change.description, kind: "change" as const })),
             ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
@@ -1190,10 +1356,11 @@ export default function Home() {
                 <td><b className={item.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.gstRegistered === null ? "Pending" : item.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.gstFrom || "—"}</small></td>
                 <td><span>{item.entityType || "—"}</span></td>
                 <td><b>{item.state || "—"}</b><small>{item.postcode || ""}</small></td>
+                <td className="record-bank-cell"><div><b>{item.bankDetails?.accountName || item.bankDetails?.bankName || "—"}</b>{item.bankDetails && <small>BSB {formatBsb(item.bankDetails.bsb)} · Account {item.bankDetails.accountNumber}</small>}</div><button type="button" className="bank-edit-button" onClick={() => openBankEditor(item)}>{item.bankDetails ? "Edit" : "Add"}</button></td>
                 <td><span>{dateTime(item.lastChecked)}</span><small>{item.source === "official" ? "Official service" : item.source === "demo" ? "Demo snapshot" : "Pending"}</small></td>
                 <td><div className="row-actions"><button className={`${isExpanded ? "history-toggle open" : "history-toggle"}${isHistoryLoading ? " loading" : ""}`} aria-expanded={isExpanded} aria-busy={isHistoryLoading} aria-controls={`history-${item.abn}`} aria-label={isExpanded ? `Collapse details for ${item.entityName}` : `Expand details for ${item.entityName}`} title={isExpanded ? "Collapse details" : "Expand details"} onClick={() => void toggleAbnHistory(item.abn)}><i aria-hidden="true" /></button><button className="row-action" disabled={item.abn === currentAccount.ownAbn} aria-label={`Remove ${item.entityName}`} title={item.abn === currentAccount.ownAbn ? "Your company cannot be removed" : "Remove ABN"} onClick={() => { if (window.confirm(`Remove ${item.entityName} (${formatAbn(item.abn)}) from the ABN Register?`)) setRegister((previous) => previous.filter((record) => record.abn !== item.abn)); }}>×</button></div></td>
               </tr>
-              {isExpanded && <tr className="history-row" id={`history-${item.abn}`}><td colSpan={7}>
+              {isExpanded && <tr className="history-row" id={`history-${item.abn}`}><td colSpan={8}>
                 <div className="history-panel">
                   <div className="history-panel-head"><div><h3>ABN details & history</h3><p>Official ABN Lookup history, plus changes recorded by this workspace.</p></div><span>{activity.length} workspace event{activity.length === 1 ? "" : "s"}</span></div>
                   <div className="history-layout">
@@ -1204,6 +1371,7 @@ export default function Home() {
                       <div className="abr-entity-type"><span>Entity type</span><b>{item.officialHistory?.entityType || item.entityType || "Unavailable"}</b></div>
                       <OfficialHistorySection title="Goods & Services Tax (GST)" rows={gstHistory} empty="No current or historical GST registrations" />
                       <OfficialHistorySection title="Main business location" rows={locationHistory} empty="No location history available" />
+                      {item.bankDetails && <section className="record-bank-details"><div><h4>Saved bank details</h4><button type="button" onClick={() => openBankEditor(item)}>Edit</button></div><BankDetailsFields details={item.bankDetails} /></section>}
                       <div className="abr-history-meta"><span>ABN last updated: {item.officialHistory?.recordLastUpdated || "Unavailable"}</span><span>Record retrieved: {item.officialHistory?.retrievedAt ? dateTime(item.officialHistory.retrievedAt) : dateTime(item.lastChecked)}</span></div>
                     </section>
                     <section className="history-activity"><h4>Updates recorded by this workspace</h4>{!activity.length ? <div className="history-empty">No monitoring activity has been recorded yet.</div> : <div className="activity-list">{activity.slice(0, 10).map((entry) => <div className={`activity-item ${entry.kind}`} key={`${entry.kind}-${entry.id}`}><span /><div><div><b>{entry.title}</b><time>{dateTime(entry.at)}</time></div><p>{entry.detail}</p></div></div>)}</div>}</section>
@@ -1218,6 +1386,21 @@ export default function Home() {
 
         {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>A local webpage cannot run while it is closed. When opened, the app checks whether an update is due.</p><div className="radio-group">{[{ id: "daily", label: "Daily", note: "Every 24 hours" }, { id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }].map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
       </section>
+      {editingBankRecord && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBankEditor(); }}>
+        <section className="bank-editor" role="dialog" aria-modal="true" aria-labelledby="bank-editor-title">
+          <div className="bank-editor-head"><div><span>BANK</span><div><h2 id="bank-editor-title">{editingBankRecord.bankDetails ? "Edit bank details" : "Add bank details"}</h2><p>{editingBankRecord.entityName} · {formatAbn(editingBankRecord.abn)}</p></div></div><button type="button" aria-label="Close bank details editor" onClick={closeBankEditor}>×</button></div>
+          <form onSubmit={saveBankDetails}>
+            <div className="bank-editor-grid">
+              <label>Account name<input autoFocus value={bankDraft.accountName} onChange={(event) => setBankDraft((draft) => ({ ...draft, accountName: event.target.value }))} placeholder="Account holder name" /></label>
+              <label>Bank name<input value={bankDraft.bankName} onChange={(event) => setBankDraft((draft) => ({ ...draft, bankName: event.target.value }))} placeholder="Optional" /></label>
+              <label>BSB<input inputMode="numeric" value={bankDraft.bsb} onChange={(event) => setBankDraft((draft) => ({ ...draft, bsb: event.target.value }))} placeholder="123-456" /></label>
+              <label>Account number<input inputMode="numeric" value={bankDraft.accountNumber} onChange={(event) => setBankDraft((draft) => ({ ...draft, accountNumber: event.target.value }))} placeholder="Account number" /></label>
+            </div>
+            {bankEditError && <p className="bank-editor-error">{bankEditError}</p>}
+            <div className="bank-editor-actions">{editingBankRecord.bankDetails && <button type="button" className="bank-remove-button" onClick={removeBankDetails}>Remove details</button>}<button type="button" className="secondary-button" onClick={closeBankEditor}>Cancel</button><button type="submit" className="primary-small">Save changes</button></div>
+          </form>
+        </section>
+      </div>}
     </main>
   );
 }
