@@ -2,7 +2,7 @@
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 
-type Tab = "verify" | "register" | "changes" | "settings";
+type Tab = "verify" | "today" | "register" | "changes" | "settings";
 type Source = "official" | "demo" | "pending";
 type RegisterFilter = "all" | "attention" | "active" | "cancelled" | "gst-registered" | "gst-not-registered";
 
@@ -55,6 +55,7 @@ type ContractDocument = {
   url: string;
   text: string;
   abns: string[];
+  uploadedAt: string;
 };
 
 type DetectedEntity = {
@@ -63,12 +64,15 @@ type DetectedEntity = {
   fileIds: string[];
   fileNames: string[];
   context: string;
+  uploadedAt: string;
 };
 
 type ContractCheck = {
   id: string;
+  batchId: string;
   fileName: string;
   fileIds: string[];
+  uploadedAt: string;
   checkedAt: string;
   abn: string;
   contractName: string;
@@ -77,6 +81,26 @@ type ContractCheck = {
   contractStatus: "Active" | "Cancelled" | null;
   official: AbnRecord;
   issues: string[];
+  reviewed: boolean;
+};
+
+type TodayFileRef = {
+  id: string;
+  name: string;
+};
+
+type TodayReview = {
+  id: string;
+  sourceCheckId: string;
+  batchId: string;
+  fileName: string;
+  uploadedAt: string;
+  completedAt: string;
+  verifiedAt?: string;
+  status: "double-check" | "verified";
+  issues: string[];
+  official: AbnRecord;
+  files?: TodayFileRef[];
 };
 
 type ChangeLog = {
@@ -105,6 +129,42 @@ const STORAGE = {
   accounts: "abn-guard-accounts-v1",
   session: "abn-guard-session-v1",
 };
+
+const FILE_DATABASE = "abn-guard-files-v1";
+const FILE_STORE = "original-files";
+
+function openFileDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(FILE_DATABASE, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(FILE_STORE)) request.result.createObjectStore(FILE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function storeOriginalFile(id: string, file: File) {
+  const database = await openFileDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(FILE_STORE, "readwrite");
+    transaction.objectStore(FILE_STORE).put(file, id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  database.close();
+}
+
+async function loadOriginalFile(id: string) {
+  const database = await openFileDatabase();
+  const file = await new Promise<Blob | undefined>((resolve, reject) => {
+    const request = database.transaction(FILE_STORE, "readonly").objectStore(FILE_STORE).get(id);
+    request.onsuccess = () => resolve(request.result as Blob | undefined);
+    request.onerror = () => reject(request.error);
+  });
+  database.close();
+  return file;
+}
 
 function accountStorage(accountId: string, key: string) {
   return `abn-guard-account-${accountId}-${key}-v1`;
@@ -357,6 +417,31 @@ function OfficialHistorySection({ title, rows, empty }: { title: string; rows: O
   </section>;
 }
 
+function checkIsVerified(check: ContractCheck) {
+  return check.issues.length === 0 || check.reviewed;
+}
+
+function TodaySection({ title, subtitle, items, onVerify, onOpenFile }: { title: string; subtitle: string; items: TodayReview[]; onVerify?: (id: string) => void; onOpenFile: (file: TodayFileRef) => void }) {
+  return <section className="panel today-section">
+    <div className="today-section-heading">
+      <div><h2>{title}</h2><p>{subtitle}</p></div>
+      <span>{items.length}</span>
+    </div>
+    {!items.length ? <div className="today-empty">No items in this section.</div> : <div className="table-wrap today-table"><table>
+      <thead><tr><th>File</th><th>Name / ABN</th><th>ABN status</th><th>GST status</th><th>Uploaded</th><th>Issues</th><th>Review</th></tr></thead>
+      <tbody>{items.map((item) => <tr key={item.id}>
+        <td>{item.files?.length ? <div className="today-file-links">{item.files.map((file) => <button type="button" key={file.id} onClick={() => onOpenFile(file)} title={`Open ${file.name}`}>{file.name}</button>)}</div> : <b>{item.fileName || "—"}</b>}</td>
+        <td><b>{item.official.entityName || "Name unavailable"}</b><small>{formatAbn(item.official.abn)}</small></td>
+        <td><span className={item.official.status === "Active" ? "status-dot active" : item.official.status === "Cancelled" ? "status-dot cancelled" : "status-dot"}>{item.official.status}</span><small>{item.official.statusFrom || "—"}</small></td>
+        <td><b className={item.official.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.official.gstRegistered === null ? "Pending" : item.official.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.official.gstFrom || "—"}</small></td>
+        <td><span>{dateTime(item.uploadedAt)}</span></td>
+        <td><span className={item.issues.length && item.status === "double-check" ? "today-issues open" : "today-issues"}>{item.issues.length ? item.status === "verified" ? `${item.issues.length} reviewed` : `${item.issues.length} issue${item.issues.length === 1 ? "" : "s"}` : "None"}</span>{item.issues[0] && <small title={item.issues.join(" · ")}>{item.issues[0]}</small>}</td>
+        <td>{onVerify ? <button className="today-verify" type="button" onClick={() => onVerify(item.id)}>Verify</button> : <span className="today-verified">✓ Verified</span>}</td>
+      </tr>)}</tbody>
+    </table></div>}
+  </section>;
+}
+
 export default function Home() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [currentAccount, setCurrentAccount] = useState<Account | null>(null);
@@ -374,6 +459,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [checks, setChecks] = useState<ContractCheck[]>([]);
+  const [todayReviews, setTodayReviews] = useState<TodayReview[]>([]);
   const [register, setRegister] = useState<AbnRecord[]>([]);
   const [changes, setChanges] = useState<ChangeLog[]>([]);
   const [history, setHistory] = useState<AbnHistoryEntry[]>([]);
@@ -415,6 +501,10 @@ export default function Home() {
     if (!hydrated || !currentAccount) return;
     localStorage.setItem(accountStorage(currentAccount.id, "history"), JSON.stringify(history));
   }, [history, currentAccount, hydrated]);
+  useEffect(() => {
+    if (!hydrated || !currentAccount) return;
+    localStorage.setItem(accountStorage(currentAccount.id, "today"), JSON.stringify(todayReviews));
+  }, [todayReviews, currentAccount, hydrated]);
 
   useEffect(() => {
     if (!hydrated || !currentAccount?.setupComplete || schedule === "manual" || !register.length) return;
@@ -435,6 +525,7 @@ export default function Home() {
     setRegister(JSON.parse(localStorage.getItem(accountStorage(accountId, "register")) ?? "[]"));
     localStorage.removeItem(accountStorage(accountId, "checks"));
     setChecks([]);
+    setTodayReviews(JSON.parse(localStorage.getItem(accountStorage(accountId, "today")) ?? "[]"));
     setChanges(JSON.parse(localStorage.getItem(accountStorage(accountId, "changes")) ?? "[]"));
     setHistory(JSON.parse(localStorage.getItem(accountStorage(accountId, "history")) ?? "[]"));
     setExpandedAbns([]);
@@ -457,6 +548,7 @@ export default function Home() {
           fileIds: [...new Set([...(existing?.fileIds ?? []), document.id])],
           fileNames: [...new Set([...(existing?.fileNames ?? []), document.name])],
           context: existing?.context || context,
+          uploadedAt: existing?.uploadedAt || document.uploadedAt,
         });
       });
     });
@@ -477,8 +569,13 @@ export default function Home() {
     });
   }, [query, register, registerFilter]);
 
-  const latestChecks = useMemo(() => checks.slice(0, 12), [checks]);
-  const issueCount = checks.filter((check) => check.issues.length > 0).length;
+  const latestChecks = useMemo(() => {
+    const batchId = checks[0]?.batchId;
+    return batchId ? checks.filter((check) => check.batchId === batchId) : [];
+  }, [checks]);
+  const doubleCheckItems = useMemo(() => todayReviews.filter((item) => item.status === "double-check"), [todayReviews]);
+  const verifiedTodayItems = useMemo(() => todayReviews.filter((item) => item.status === "verified"), [todayReviews]);
+  const issueCount = latestChecks.filter((check) => !checkIsVerified(check)).length;
 
   useEffect(() => {
     setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0)));
@@ -531,6 +628,42 @@ export default function Home() {
     event.preventDefault();
     setAuthError("");
     const email = authEmail.trim().toLowerCase();
+    if (authMode === "signin" && email === "admin") {
+      if (!authPassword) {
+        setAuthError("Enter the administrator password.");
+        return;
+      }
+      try {
+        const response = await fetch("/api/admin-auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: email, password: authPassword }),
+        });
+        const result = await response.json() as { authenticated?: boolean; error?: string };
+        if (!response.ok || !result.authenticated) {
+          setAuthError(result.error || "Administrator sign-in failed.");
+          return;
+        }
+        const adminAccount: Account = {
+          id: "administrator",
+          companyName: "Administrator",
+          email: "admin",
+          passwordHash: "server-managed",
+          createdAt: new Date().toISOString(),
+          setupComplete: true,
+          ownAbn: "",
+        };
+        const nextAccounts = [...accounts.filter((account) => account.id !== adminAccount.id), adminAccount];
+        persistAccounts(nextAccounts);
+        localStorage.setItem(STORAGE.session, adminAccount.id);
+        setCurrentAccount(adminAccount);
+        loadAccountData(adminAccount.id);
+        setAuthPassword("");
+      } catch {
+        setAuthError("Administrator sign-in is temporarily unavailable.");
+      }
+      return;
+    }
     if (!email.includes("@") || authPassword.length < 6) {
       setAuthError("Enter a valid work email and a password of at least 6 characters.");
       return;
@@ -630,7 +763,9 @@ export default function Home() {
     for (const file of files) {
       try {
         const text = await readContract(file);
-        parsed.push({ id: crypto.randomUUID(), name: file.name, url: URL.createObjectURL(file), text, abns: extractAbns(text) });
+        const id = crypto.randomUUID();
+        await storeOriginalFile(id, file);
+        parsed.push({ id, name: file.name, url: URL.createObjectURL(file), text, abns: extractAbns(text), uploadedAt: new Date().toISOString() });
       } catch {
         failed += 1;
       }
@@ -648,8 +783,8 @@ export default function Home() {
     }
     setBusy(true);
     setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}…`);
+    const batchId = crypto.randomUUID();
     const nextChecks: ContractCheck[] = [];
-    const nextRecords: AbnRecord[] = [];
     for (const detected of detectedEntities) {
       try {
         const official = await lookupAbn(detected.abn);
@@ -665,26 +800,23 @@ export default function Home() {
         if (official.source === "pending") issues.push("Official API is not connected. Add a GUID and verify again.");
         nextChecks.push({
           id: crypto.randomUUID(),
+          batchId,
           fileName: detected.fileNames.join(", "),
           fileIds: detected.fileIds,
+          uploadedAt: detected.uploadedAt,
           checkedAt: new Date().toISOString(),
           abn: detected.abn,
           official,
           issues,
+          reviewed: false,
           ...claims,
         });
-        nextRecords.push(official);
       } catch (error) {
         setNotice(error instanceof Error ? error.message : "Lookup failed");
       }
     }
     setChecks((previous) => [...nextChecks, ...previous].slice(0, 100));
     setActiveCheckIndex(0);
-    setRegister((previous) => {
-      const map = new Map(previous.map((item) => [item.abn, item]));
-      nextRecords.forEach((item) => map.set(item.abn, item));
-      return [...map.values()];
-    });
     setBusy(false);
     setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}, ${nextChecks.filter((item) => item.issues.length).length} requiring attention`);
   }
@@ -694,6 +826,84 @@ export default function Home() {
     setActiveCheckIndex(0);
     if (currentAccount) localStorage.removeItem(accountStorage(currentAccount.id, "checks"));
     setNotice("Verification results cleared.");
+  }
+
+  function setCheckReviewed(checkId: string, reviewed: boolean) {
+    setChecks((previous) => previous.map((check) => check.id === checkId ? { ...check, reviewed } : check));
+  }
+
+  function addVerifiedRecords(items: AbnRecord[]) {
+    if (!items.length) return;
+    setRegister((previous) => {
+      const map = new Map(previous.map((item) => [item.abn, item]));
+      items.forEach((item) => map.set(item.abn, item));
+      return [...map.values()];
+    });
+    addHistoryEntries(items, "Added to register");
+  }
+
+  function completeVerificationBatch() {
+    if (!latestChecks.length) return;
+    const completedAt = new Date().toISOString();
+    const completed: TodayReview[] = latestChecks.map((check) => ({
+      id: crypto.randomUUID(),
+      sourceCheckId: check.id,
+      batchId: check.batchId,
+      fileName: check.fileName || "—",
+      uploadedAt: check.uploadedAt || check.checkedAt,
+      completedAt,
+      verifiedAt: checkIsVerified(check) ? completedAt : undefined,
+      status: checkIsVerified(check) ? "verified" : "double-check",
+      issues: check.issues,
+      official: check.official,
+      files: check.fileIds.map((fileId) => documents.find((document) => document.id === fileId)).filter((document): document is ContractDocument => Boolean(document)).map((document) => ({ id: document.id, name: document.name })),
+    }));
+    const verifiedRecords = latestChecks.filter(checkIsVerified).map((check) => check.official);
+    setTodayReviews((previous) => [...completed, ...previous].slice(0, 500));
+    addVerifiedRecords(verifiedRecords);
+    documents.forEach((document) => URL.revokeObjectURL(document.url));
+    setDocuments([]);
+    setChecks([]);
+    setActiveCheckIndex(0);
+    setTab("today");
+    const doubleChecks = completed.length - verifiedRecords.length;
+    setNotice(`Batch completed: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent for double check` : ""}.`);
+  }
+
+  function verifyTodayReview(reviewId: string) {
+    const review = todayReviews.find((item) => item.id === reviewId);
+    if (!review || review.status === "verified") return;
+    const verifiedAt = new Date().toISOString();
+    setTodayReviews((previous) => previous.map((item) => item.id === reviewId ? { ...item, status: "verified", verifiedAt } : item));
+    addVerifiedRecords([review.official]);
+    setNotice(`${review.official.entityName || formatAbn(review.official.abn)} verified and added to Records.`);
+  }
+
+  async function openTodayFile(file: TodayFileRef) {
+    const preview = window.open("about:blank", "_blank");
+    if (preview) preview.opener = null;
+    try {
+      const original = await loadOriginalFile(file.id);
+      if (!original) throw new Error("Original file is unavailable");
+      const url = URL.createObjectURL(original);
+      if (preview) preview.location.href = url;
+      else {
+        const link = document.createElement("a");
+        link.href = url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.click();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      preview?.close();
+      setNotice(`The original file “${file.name}” is no longer available in this browser.`);
+    }
+  }
+
+  function navigateTo(nextTab: Tab) {
+    setNotice("");
+    setTab(nextTab);
   }
 
   async function refreshAll(simulate = false) {
@@ -826,8 +1036,8 @@ export default function Home() {
             <h2>{authMode === "register" ? "Register your company" : "Sign in to ABN Guard"}</h2>
             <p>{authMode === "register" ? "Set up a private company workspace on this device." : "Access your company’s saved ABNs and contract checks."}</p>
             {authMode === "register" && <label>Company name<input value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>}
-            <label>Work email<input type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></label>
-            <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="At least 6 characters" autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
+            <label>{authMode === "register" ? "Work email" : "Email or username"}<input type={authMode === "register" ? "email" : "text"} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === "register" ? "you@company.com" : "you@company.com or admin"} autoComplete="username" /></label>
+            <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder={authMode === "register" ? "At least 6 characters" : "Enter your password"} autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
             {authError && <div className="auth-error">{authError}</div>}
             <button className="primary-button" type="submit">{authMode === "register" ? "Create company account" : "Sign in"}<span>→</span></button>
             <div className="auth-switch">{authMode === "register" ? "Already registered?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Create an account"}</button></div>
@@ -863,24 +1073,25 @@ export default function Home() {
   }
 
   const nav = [
-    { id: "verify" as const, icon: "01", label: "Contract check", hint: "Extract & compare" },
-    { id: "register" as const, icon: "02", label: "ABN register", hint: `${register.length} records` },
-    { id: "changes" as const, icon: "03", label: "Change alerts", hint: `${changes.length} changes` },
+    { id: "verify" as const, icon: "C", label: "Check", hint: "Extract & compare" },
+    { id: "today" as const, icon: "T", label: "Today", hint: `${doubleCheckItems.length} to review` },
+    { id: "register" as const, icon: "R", label: "Records", hint: `${register.length} records` },
+    { id: "changes" as const, icon: "A", label: "Alerts", hint: `${changes.length} changes` },
   ];
 
   return (
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand"><span className="brand-mark">A</span><div><strong>ABN Guard</strong><small>Supplier verification</small></div></div>
-        <nav><p className="nav-title">Workspace</p>{nav.map((item) => <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => setTab(item.id)}><span>{item.icon}</span><div><b>{item.label}</b><small>{item.hint}</small></div></button>)}</nav>
+        <nav><p className="nav-title">Workspace</p>{nav.map((item) => <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => navigateTo(item.id)}><span>{item.icon}</span><div><b>{item.label}</b><small>{item.hint}</small></div></button>)}</nav>
         <div className="sidebar-bottom">
-          <button className={tab === "settings" ? "nav-item active" : "nav-item"} onClick={() => setTab("settings")}><span>⚙</span><div><b>Connection</b><small>{apiConfigured ? "Official API" : "Demo mode"}</small></div></button>
+          <button className={tab === "settings" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")}><span>⚙</span><div><b>Connection</b><small>{apiConfigured ? "Official API" : "Demo mode"}</small></div></button>
           <div className="account-card"><span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span><div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button onClick={signOut} aria-label="Sign out">↗</button></div>
         </div>
       </aside>
 
       <section className="workspace">
-        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "register" ? "ABN register" : tab === "changes" ? "Changes & risk alerts" : "Connection & update settings"}</h1></div><div className="top-actions"><span className={apiConfigured ? "mode-pill live" : "mode-pill"}><i />{apiConfigured ? "Official data" : "Demo data"}</span><button className="ghost-button" onClick={() => setTab("settings")}>Settings</button></div></header>
+        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "today" ? "Daily review workspace" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "today" ? "Today" : tab === "register" ? "Records" : tab === "changes" ? "Alerts" : "Connection & update settings"}</h1></div><div className="top-actions"><span className={apiConfigured ? "mode-pill live" : "mode-pill"}><i />{apiConfigured ? "Official data" : "Demo data"}</span><button className="ghost-button" onClick={() => navigateTo("settings")}>Settings</button></div></header>
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
@@ -897,7 +1108,7 @@ export default function Home() {
             </article>
 
             <article className="panel results-panel">
-              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button></div> : <small>File vs ABN Lookup</small>}</div>
+              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Today" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
               {!latestChecks.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{latestChecks.slice(activeCheckIndex, activeCheckIndex + 1).map((check) => {
                 const safeContractName = check.contractName && check.contractName.length <= 120 ? check.contractName : "Not found in file";
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
@@ -906,8 +1117,9 @@ export default function Home() {
                 const nameComparison = safeContractName === "Not found in file" || !check.official.entityName ? null : compareCompanyNames(safeContractName, check.official.entityName);
                 const abnMatch = onlyDigits(check.abn) === onlyDigits(check.official.abn);
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
-                return <div className={check.issues.length ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3></div><span className={check.issues.length ? "result-pill issue" : "result-pill ok"}>{check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Verified"}</span></div>
+                const isVerified = checkIsVerified(check);
+                return <div className={!isVerified ? "check-card alert" : "check-card"} key={check.id}>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3></div><div className="check-result-actions"><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>Reviewed</span></label>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
@@ -935,6 +1147,15 @@ export default function Home() {
               })}</div>}
             </article>
           </div>
+        </div>}
+
+        {tab === "today" && <div className="page-content today-page">
+          <div className="today-summary">
+            <article className="panel"><span className="today-summary-icon attention">!</span><div><small>Double check</small><strong>{doubleCheckItems.length}</strong><p>Items still waiting for a decision</p></div></article>
+            <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved and saved to Records</p></div></article>
+          </div>
+          <TodaySection title="Double check" subtitle="Review unresolved mismatches before adding them to Records." items={doubleCheckItems} onVerify={verifyTodayReview} onOpenFile={(file) => void openTodayFile(file)} />
+          <TodaySection title="Verified" subtitle="Completed checks that are already recorded in your supplier records." items={verifiedTodayItems} onOpenFile={(file) => void openTodayFile(file)} />
         </div>}
 
         {tab === "register" && <div className="page-content">

@@ -38,14 +38,18 @@ test("server-renders the ABN Guard application shell", async () => {
   assert.match(html, /<div class="app-loading">Loading ABN Guard…<\/div>/i);
 });
 
-test("keeps the ABN Lookup GUID on the server", async () => {
-  const [route, page, exampleEnv] = await Promise.all([
+test("keeps service credentials on the server", async () => {
+  const [route, adminRoute, page, exampleEnv] = await Promise.all([
     readFile(new URL("../app/api/abn/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin-auth/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
   ]);
 
   assert.match(route, /process\.env\.ABN_LOOKUP_GUID/);
+  assert.match(adminRoute, /process\.env\.ADMIN_PASSWORD/);
   assert.match(exampleEnv, /^ABN_LOOKUP_GUID=\s*$/m);
+  assert.match(exampleEnv, /^ADMIN_PASSWORD=\s*$/m);
   assert.doesNotMatch(page, /process\.env\.ABN_LOOKUP_GUID/);
+  assert.doesNotMatch(page, /process\.env\.ADMIN_PASSWORD/);
 });
