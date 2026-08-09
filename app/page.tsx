@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
+import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 
 type Tab = "verify" | "today" | "register" | "changes" | "settings";
 type Source = "official" | "demo" | "pending";
@@ -505,6 +506,8 @@ export default function Home() {
   const [isParsing, setIsParsing] = useState(false);
   const [checks, setChecks] = useState<ContractCheck[]>([]);
   const [todayReviews, setTodayReviews] = useState<TodayReview[]>([]);
+  const [todayDayKey, setTodayDayKey] = useState("");
+  const [expandedTodayDays, setExpandedTodayDays] = useState<string[]>([]);
   const [register, setRegister] = useState<AbnRecord[]>([]);
   const [changes, setChanges] = useState<ChangeLog[]>([]);
   const [history, setHistory] = useState<AbnHistoryEntry[]>([]);
@@ -555,6 +558,18 @@ export default function Home() {
     if (!hydrated || !currentAccount) return;
     localStorage.setItem(accountStorage(currentAccount.id, "today"), JSON.stringify(todayReviews));
   }, [todayReviews, currentAccount, hydrated]);
+
+  useEffect(() => {
+    let refreshTimer = 0;
+    const startReviewDay = () => {
+      const activeDay = todayReviewDayKey();
+      setTodayDayKey(activeDay);
+      setExpandedTodayDays([activeDay]);
+      refreshTimer = window.setTimeout(startReviewDay, millisecondsUntilTodayRefresh() + 250);
+    };
+    startReviewDay();
+    return () => window.clearTimeout(refreshTimer);
+  }, [currentAccount?.id]);
 
   useEffect(() => {
     if (!hydrated || !currentAccount?.setupComplete || schedule === "manual" || !register.length) return;
@@ -634,8 +649,20 @@ export default function Home() {
     const batchId = checks[0]?.batchId;
     return batchId ? checks.filter((check) => check.batchId === batchId) : [];
   }, [checks]);
-  const doubleCheckItems = useMemo(() => todayReviews.filter((item) => item.status === "double-check"), [todayReviews]);
-  const verifiedTodayItems = useMemo(() => todayReviews.filter((item) => item.status === "verified"), [todayReviews]);
+  const todayDayGroups = useMemo(() => {
+    const grouped = new Map<string, TodayReview[]>();
+    todayReviews.forEach((item) => {
+      const day = todayReviewDayKey(item.completedAt || item.uploadedAt);
+      grouped.set(day, [...(grouped.get(day) ?? []), item]);
+    });
+    if (todayDayKey && !grouped.has(todayDayKey)) grouped.set(todayDayKey, []);
+    return [...grouped.entries()]
+      .sort(([left], [right]) => right.localeCompare(left))
+      .map(([day, items]) => ({ day, items }));
+  }, [todayDayKey, todayReviews]);
+  const currentTodayItems = useMemo(() => todayReviews.filter((item) => todayReviewDayKey(item.completedAt || item.uploadedAt) === todayDayKey), [todayDayKey, todayReviews]);
+  const doubleCheckItems = useMemo(() => currentTodayItems.filter((item) => item.status === "double-check"), [currentTodayItems]);
+  const verifiedTodayItems = useMemo(() => currentTodayItems.filter((item) => item.status === "verified"), [currentTodayItems]);
   const issueCount = latestChecks.filter((check) => !checkIsVerified(check)).length;
 
   useEffect(() => {
@@ -1034,6 +1061,10 @@ export default function Home() {
     setNotice(`${review.official.entityName || formatAbn(review.official.abn)} verified and added to Records.`);
   }
 
+  function toggleTodayDay(day: string) {
+    setExpandedTodayDays((previous) => previous.includes(day) ? previous.filter((item) => item !== day) : [...previous, day]);
+  }
+
   async function openTodayFile(file: TodayFileRef) {
     const preview = window.open("about:blank", "_blank");
     if (preview) preview.opener = null;
@@ -1320,8 +1351,22 @@ export default function Home() {
             <article className="panel"><span className="today-summary-icon attention">!</span><div><small>Double check</small><strong>{doubleCheckItems.length}</strong><p>Items still waiting for a decision</p></div></article>
             <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved and saved to Records</p></div></article>
           </div>
-          <TodaySection title="Double check" subtitle="Review unresolved mismatches before adding them to Records." items={doubleCheckItems} onVerify={verifyTodayReview} onOpenFile={(file) => void openTodayFile(file)} />
-          <TodaySection title="Verified" subtitle="Completed checks that are already recorded in your supplier records." items={verifiedTodayItems} onOpenFile={(file) => void openTodayFile(file)} />
+          <div className="today-day-list">{todayDayGroups.map(({ day, items }) => {
+            const isCurrent = day === todayDayKey;
+            const isExpanded = expandedTodayDays.includes(day);
+            const dayDoubleChecks = items.filter((item) => item.status === "double-check");
+            const dayVerified = items.filter((item) => item.status === "verified");
+            return <section className={isCurrent ? "panel today-day current" : "panel today-day"} key={day}>
+              <button className="today-day-toggle" type="button" aria-expanded={isExpanded} aria-controls={`today-day-${day}`} onClick={() => toggleTodayDay(day)}>
+                <div className="today-day-title"><span>{isCurrent ? "Current day" : "Daily archive"}</span><h2>{todayReviewDayLabel(day, isCurrent)}</h2><p>{isCurrent ? "New activity since 8:00 am · refreshes daily at 8:00 am" : `${items.length} completed check${items.length === 1 ? "" : "s"}`}</p></div>
+                <div className="today-day-counts"><span className={dayDoubleChecks.length ? "attention" : ""}><b>{dayDoubleChecks.length}</b> Double check</span><span><b>{dayVerified.length}</b> Verified</span><i aria-hidden="true">⌄</i></div>
+              </button>
+              {isExpanded && <div className="today-day-content" id={`today-day-${day}`}>
+                <TodaySection title="Double check" subtitle="Review unresolved mismatches before adding them to Records." items={dayDoubleChecks} onVerify={verifyTodayReview} onOpenFile={(file) => void openTodayFile(file)} />
+                <TodaySection title="Verified" subtitle="Completed checks that are already recorded in your supplier records." items={dayVerified} onOpenFile={(file) => void openTodayFile(file)} />
+              </div>}
+            </section>;
+          })}</div>
         </div>}
 
         {tab === "register" && <div className="page-content">

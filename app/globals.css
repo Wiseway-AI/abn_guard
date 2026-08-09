@@ -212,6 +212,25 @@ button { color: inherit; }
 .today-summary small { color: var(--muted); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .today-summary strong { margin: 3px 0; font: 500 28px Georgia, serif; }
 .today-summary p { margin: 0; color: var(--muted); font-size: 12px; }
+.today-day-list { display: grid; gap: 13px; }
+.today-day { overflow: hidden; }
+.today-day.current { border-color: #bcd4c8; box-shadow: 0 10px 28px rgba(30, 70, 53, .07); }
+.today-day-toggle { width: 100%; min-height: 102px; display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 20px; border: 0; background: white; color: var(--ink); text-align: left; cursor: pointer; }
+.today-day.current .today-day-toggle { background: linear-gradient(90deg, #f7fbf8 0%, #fff 72%); }
+.today-day-toggle:hover { background: #fafcfb; }
+.today-day-title { min-width: 0; }
+.today-day-title > span { display: block; margin-bottom: 4px; color: var(--green-2); font-size: 10px; font-weight: 800; letter-spacing: .09em; text-transform: uppercase; }
+.today-day-title h2 { margin: 0; font: 600 21px Georgia, serif; }
+.today-day-title p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.today-day-counts { display: flex; align-items: center; justify-content: flex-end; gap: 9px; flex: 0 0 auto; }
+.today-day-counts > span { min-width: 112px; padding: 9px 12px; border-radius: 9px; background: #eef5f1; color: var(--green); font-size: 11px; font-weight: 700; text-align: center; white-space: nowrap; }
+.today-day-counts > span.attention { background: var(--amber-bg); color: #915715; }
+.today-day-counts b { margin-right: 4px; font-size: 14px; }
+.today-day-counts i { width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: white; color: #4d5d55; font-size: 19px; font-style: normal; transition: transform .18s ease; }
+.today-day-toggle[aria-expanded="true"] .today-day-counts i { transform: rotate(180deg); }
+.today-day-content { display: grid; gap: 14px; padding: 0 18px 18px; border-top: 1px solid #e7ece9; background: #fafcfb; }
+.today-day-content .today-section { margin-top: 16px; box-shadow: none; }
+.today-day-content .today-section + .today-section { margin-top: 0; }
 .today-section { padding: 20px; }
 .today-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .today-section-heading h2 { margin: 0; font: 600 22px Georgia, serif; }
@@ -691,6 +710,10 @@ td small { font-size: 12px; }
   .registration-fact { min-height: 74px; }
   .today-summary { grid-template-columns: 1fr; }
   .today-summary article { min-height: 104px; padding: 17px; }
+  .today-day-toggle { min-height: 0; align-items: stretch; flex-direction: column; padding: 16px; }
+  .today-day-counts { display: grid; grid-template-columns: 1fr 1fr 38px; width: 100%; }
+  .today-day-counts > span { min-width: 0; }
+  .today-day-content { padding: 0 12px 12px; }
   .today-section { padding: 14px; }
   .today-section-heading h2 { font-size: 23px; }
   .today-table { border: 0; background: transparent; overflow: visible; }
