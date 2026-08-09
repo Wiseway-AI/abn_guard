@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { classifyAbnRoles, type AbnRoleCandidate } from "./abn-role";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 
@@ -58,6 +59,10 @@ type ContractDocument = {
   url: string;
   text: string;
   abns: string[];
+  abnRoles: AbnRoleCandidate[];
+  selectedPayeeAbns: string[];
+  payeeSelection: "automatic" | "manual" | "unresolved";
+  abnEntityNames: Record<string, string>;
   uploadedAt: string;
 };
 
@@ -604,7 +609,7 @@ export default function Home() {
     const map = new Map<string, DetectedEntity>();
     documents.forEach((document) => {
       const documentBankDetails = extractBankDetails(document.text);
-      document.abns.forEach((abn) => {
+      document.selectedPayeeAbns.forEach((abn) => {
         const context = contextForAbn(document.text, abn);
         const name = claimsFromContext(context).contractName;
         const existing = map.get(abn);
@@ -630,6 +635,10 @@ export default function Home() {
     });
     return [...map.values()];
   }, [documents]);
+
+  const roleReviewDocuments = useMemo(() => documents.filter((document) => document.abns.length > 1 || (document.abns.length > 0 && document.payeeSelection === "unresolved")), [documents]);
+  const unresolvedRoleDocuments = useMemo(() => documents.filter((document) => document.abns.length > 0 && document.selectedPayeeAbns.length !== 1), [documents]);
+  const ignoredPayerCount = useMemo(() => documents.reduce((sum, document) => sum + document.abnRoles.filter((candidate) => candidate.role === "payer" && !document.selectedPayeeAbns.includes(candidate.abn)).length, 0), [documents]);
 
   const filteredRegister = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -902,21 +911,68 @@ export default function Home() {
       try {
         const text = await readContract(file);
         const id = crypto.randomUUID();
+        const abns = extractAbns(text);
+        const roleAnalysis = classifyAbnRoles(text, abns, currentAccount?.ownAbn);
+        let abnRoles = roleAnalysis.candidates;
+        let selectedPayeeAbns = roleAnalysis.selectedPayeeAbns;
+        const abnEntityNames: Record<string, string> = {};
+        if (abns.length > 1) {
+          const officialResults = await Promise.allSettled(abns.map((abn) => lookupAbn(abn)));
+          officialResults.forEach((result, index) => {
+            if (result.status === "fulfilled" && result.value.entityName) abnEntityNames[abns[index]] = result.value.entityName;
+          });
+          const accountName = extractBankDetails(text)?.accountName ?? "";
+          const accountMatches = accountName
+            ? abns.filter((abn) => abnEntityNames[abn] && compareCompanyNames(accountName, abnEntityNames[abn]) !== "mismatch")
+            : [];
+          if (accountMatches.length === 1) {
+            selectedPayeeAbns = accountMatches;
+            abnRoles = abnRoles.map((candidate) => candidate.abn === accountMatches[0]
+              ? { ...candidate, role: "payee", confidence: Math.max(candidate.confidence, 0.94), reasons: [...candidate.reasons, "Bank account name matches the ABN Lookup entity"] }
+              : candidate);
+          }
+        }
         await storeOriginalFile(id, file);
-        parsed.push({ id, name: file.name, url: URL.createObjectURL(file), text, abns: extractAbns(text), uploadedAt: new Date().toISOString() });
+        parsed.push({
+          id,
+          name: file.name,
+          url: URL.createObjectURL(file),
+          text,
+          abns,
+          abnRoles,
+          selectedPayeeAbns,
+          payeeSelection: selectedPayeeAbns.length === 1 ? "automatic" : "unresolved",
+          abnEntityNames,
+          uploadedAt: new Date().toISOString(),
+        });
       } catch {
         failed += 1;
       }
     }
     setDocuments((previous) => [...previous, ...parsed]);
     setIsParsing(false);
-    const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
-    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}${failed ? `. ${failed} file${failed === 1 ? "" : "s"} could not be read.` : "."}`);
+    const found = parsed.reduce((sum, item) => sum + item.selectedPayeeAbns.length, 0);
+    const ignored = parsed.reduce((sum, item) => sum + item.abnRoles.filter((candidate) => candidate.role === "payer" && !item.selectedPayeeAbns.includes(candidate.abn)).length, 0);
+    const unresolved = parsed.filter((item) => item.abns.length > 0 && item.selectedPayeeAbns.length !== 1).length;
+    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"}: ${found} payee ABN${found === 1 ? "" : "s"} found${ignored ? `, ${ignored} customer ABN${ignored === 1 ? "" : "s"} ignored` : ""}${unresolved ? `. Select a payee for ${unresolved} file${unresolved === 1 ? "" : "s"}.` : failed ? `. ${failed} file${failed === 1 ? "" : "s"} could not be read.` : "."}`);
+  }
+
+  function selectDocumentPayee(documentId: string, abn: string) {
+    setDocuments((previous) => previous.map((document) => document.id === documentId ? {
+      ...document,
+      selectedPayeeAbns: [abn],
+      payeeSelection: "manual",
+    } : document));
+    setNotice(`${formatAbn(abn)} selected as the payee ABN. Bank details from this file will only be linked to this ABN.`);
   }
 
   async function verifyContracts() {
+    if (unresolvedRoleDocuments.length) {
+      setNotice(`Select the payee ABN for ${unresolvedRoleDocuments.length} file${unresolvedRoleDocuments.length === 1 ? "" : "s"} before verification.`);
+      return;
+    }
     if (!detectedEntities.length) {
-      setNotice("No valid 11-digit ABN was found in the uploaded contracts.");
+      setNotice("No payee ABN was found in the uploaded contracts.");
       return;
     }
     setBusy(true);
@@ -1301,7 +1357,23 @@ export default function Home() {
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
               <div className="file-recognition-summary"><span>Files recognised</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
-              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : `Verify ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
+              {documents.length > 0 && <div className="payee-detection-summary"><b>{detectedEntities.length} payee ABN{detectedEntities.length === 1 ? "" : "s"} found</b><span>{ignoredPayerCount} customer ABN{ignoredPayerCount === 1 ? "" : "s"} ignored</span></div>}
+              {roleReviewDocuments.length > 0 && <div className="payee-review-list">{roleReviewDocuments.map((document) => <section className={document.payeeSelection === "unresolved" ? "payee-review-card unresolved" : "payee-review-card"} key={document.id}>
+                <div className="payee-review-head"><div><b>{document.name}</b><small>{document.abns.length} ABNs found</small></div>{document.payeeSelection === "unresolved" ? <span>Selection required</span> : <span className="resolved">Payee identified</span>}</div>
+                <div className="payee-candidates">{document.abnRoles.map((candidate) => {
+                  const isSelected = document.selectedPayeeAbns.includes(candidate.abn);
+                  const nearbyName = claimsFromContext(contextForAbn(document.text, candidate.abn)).contractName;
+                  const entityName = document.abnEntityNames[candidate.abn] || nearbyName || `ABN ${formatAbn(candidate.abn)}`;
+                  const roleLabel = isSelected
+                    ? document.payeeSelection === "manual" ? "Selected payee" : "Suggested payee"
+                    : candidate.role === "payer" ? "Customer / ignored" : "Not selected";
+                  return <div className={isSelected ? "payee-candidate selected" : candidate.role === "payer" ? "payee-candidate ignored" : "payee-candidate"} key={candidate.abn} title={candidate.reasons.join(" · ")}>
+                    <div className="payee-candidate-main"><span>{isSelected ? "✓" : candidate.role === "payer" ? "×" : "?"}</span><div><b>{entityName}</b><small>{formatAbn(candidate.abn)}</small></div></div>
+                    <div className="payee-candidate-action"><em>{roleLabel}</em><small>{Math.round(candidate.confidence * 100)}% confidence</small>{!isSelected && <button type="button" aria-label={`Use ${entityName} as the payee`} onClick={() => selectDocumentPayee(document.id, candidate.abn)}>Use as payee</button>}</div>
+                  </div>;
+                })}</div>
+              </section>)}</div>}
+              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length || unresolvedRoleDocuments.length > 0} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : unresolvedRoleDocuments.length ? "Select payee first" : `Verify ${detectedEntities.length} payee ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
             </article>
 
             <article className="panel results-panel">
