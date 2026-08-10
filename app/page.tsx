@@ -98,6 +98,7 @@ type ContractCheck = {
   reviewed: boolean;
   fileBankDetails?: BankDetails;
   fileBankDetailCandidates?: BankDetailsCandidate[];
+  selectedBankDetailKey?: string;
   savedBankDetails?: BankDetails;
   bankDetailStatus: "not-found" | "first-seen" | "match" | "mismatch" | "multiple";
 };
@@ -436,7 +437,7 @@ function BankDetailsFields({ details, empty = "No bank details saved" }: { detai
   </dl>;
 }
 
-function BankVerification({ check }: { check: ContractCheck }) {
+function BankVerification({ check, onSelectCandidate }: { check: ContractCheck; onSelectCandidate: (candidateKey: string) => void }) {
   if (check.bankDetailStatus === "not-found") return null;
   if (check.bankDetailStatus === "match" && check.fileBankDetails) {
     return <div className="bank-match-summary"><span>BANK</span><div><b>Bank details match</b><small>BSB {formatBsb(check.fileBankDetails.bsb)} · Account {check.fileBankDetails.accountNumber}</small></div><em>Match</em></div>;
@@ -446,16 +447,27 @@ function BankVerification({ check }: { check: ContractCheck }) {
   const isMultiple = check.bankDetailStatus === "multiple";
   return <div className={`bank-verification ${check.bankDetailStatus}`}>
     <div className="bank-verification-head"><div><span>BANK</span><b>{isMultiple ? "Multiple bank accounts found" : check.bankDetailStatus === "first-seen" ? "Confirm new bank details" : "Bank details changed"}</b></div><em>{isMultiple ? `${candidates.length} accounts` : check.bankDetailStatus === "first-seen" ? "First record" : "Mismatch"}</em></div>
-    {isMultiple ? <div className="bank-candidate-list">{candidates.map((candidate) => <section key={bankDetailsKey(candidate.details)}><div><h4>{candidate.fileNames.join(", ")}</h4><span>Uploaded file</span></div><BankDetailsFields details={candidate.details} /></section>)}</div> : check.bankDetailStatus === "first-seen" ? <section className="bank-single-panel"><BankDetailsFields details={check.fileBankDetails} /></section> : <div className="bank-comparison">
+    {isMultiple ? <div className="bank-candidate-list">{candidates.map((candidate) => {
+      const candidateKey = bankDetailsKey(candidate.details);
+      const selected = check.selectedBankDetailKey === candidateKey;
+      return <section className={selected ? "selected" : ""} key={candidateKey}>
+        <div className="bank-candidate-heading"><div><h4>{candidate.fileNames.join(", ")}</h4><span>Uploaded file</span></div><label className={selected ? "bank-candidate-select selected" : "bank-candidate-select"}><input type="radio" name={`bank-account-${check.id}`} checked={selected} onChange={() => onSelectCandidate(candidateKey)} /><span>{selected ? "Selected" : "Use this account"}</span></label></div>
+        <BankDetailsFields details={candidate.details} />
+      </section>;
+    })}</div> : check.bankDetailStatus === "first-seen" ? <section className="bank-single-panel"><BankDetailsFields details={check.fileBankDetails} /></section> : <div className="bank-comparison">
       <section className="bank-panel"><h4>Uploaded file</h4><BankDetailsFields details={check.fileBankDetails} empty="No bank details found" /></section>
       <section className="bank-panel"><h4>Saved record</h4><BankDetailsFields details={check.savedBankDetails} /></section>
     </div>}
-    <p className={check.bankDetailStatus === "first-seen" ? "bank-confirmation" : "bank-confirmation danger"}>{isMultiple ? "Different accounts were found for this ABN. Review the source files separately; Records will not be changed from this batch." : check.bankDetailStatus === "first-seen" ? "Confirm the BSB and account number against the original file, then tick Reviewed." : "Confirm this payment-detail change before ticking Reviewed. Approval will replace the saved account."}</p>
+    <p className={check.bankDetailStatus === "first-seen" ? "bank-confirmation" : check.selectedBankDetailKey ? "bank-confirmation" : "bank-confirmation danger"}>{isMultiple ? check.selectedBankDetailKey ? "The selected account will be saved to Records after you tick Reviewed and complete this batch." : "Choose the correct payment account before completing this batch. Only the selected account will be saved to Records." : check.bankDetailStatus === "first-seen" ? "Confirm the BSB and account number against the original file, then tick Reviewed." : "Confirm this payment-detail change before ticking Reviewed. Approval will replace the saved account."}</p>
   </div>;
 }
 
+function bankSelectionMissing(check: ContractCheck) {
+  return check.bankDetailStatus === "multiple" && !check.selectedBankDetailKey;
+}
+
 function checkIsVerified(check: ContractCheck) {
-  return check.issues.length === 0 || check.reviewed;
+  return !bankSelectionMissing(check) && (check.issues.length === 0 || check.reviewed);
 }
 
 function isEntityNameIssue(issue: string) {
@@ -1092,7 +1104,25 @@ export default function Home() {
   }
 
   function setCheckReviewed(checkId: string, reviewed: boolean) {
-    setChecks((previous) => previous.map((check) => check.id === checkId ? { ...check, reviewed } : check));
+    setChecks((previous) => previous.map((check) => check.id === checkId && !bankSelectionMissing(check) ? { ...check, reviewed } : check));
+  }
+
+  function selectCheckBankDetails(checkId: string, candidateKey: string) {
+    let selectedAccount = "";
+    setChecks((previous) => previous.map((check) => {
+      if (check.id !== checkId) return check;
+      const candidate = check.fileBankDetailCandidates?.find((item) => bankDetailsKey(item.details) === candidateKey);
+      if (!candidate) return check;
+      selectedAccount = `${formatBsb(candidate.details.bsb)} · ${candidate.details.accountNumber || "Account number unavailable"}`;
+      return {
+        ...check,
+        selectedBankDetailKey: candidateKey,
+        fileBankDetails: candidate.details,
+        official: { ...check.official, bankDetails: candidate.details },
+        reviewed: false,
+      };
+    }));
+    if (selectedAccount) setNotice(`Bank account ${selectedAccount} selected. Confirm it against the source file, then tick Reviewed.`);
   }
 
   function startEditingCheckName(check: ContractCheck) {
@@ -1138,6 +1168,12 @@ export default function Home() {
     const payeeChecks = latestChecks.filter(isCheckSelectedPayee);
     if (!payeeChecks.length) {
       setNotice("Select at least one payee ABN before completing this batch.");
+      return;
+    }
+    const missingBankSelections = payeeChecks.filter(bankSelectionMissing);
+    if (missingBankSelections.length) {
+      setActiveCheckIndex(Math.max(0, latestChecks.findIndex((check) => check.id === missingBankSelections[0].id)));
+      setNotice(`Choose the bank account to save for ${missingBankSelections[0].official.entityName || formatAbn(missingBankSelections[0].abn)} before completing this batch.`);
       return;
     }
     const completedAt = new Date().toISOString();
@@ -1434,7 +1470,7 @@ export default function Home() {
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
                 const isVerified = checkIsVerified(check);
                 return <div className={isSelectedPayee && !isVerified ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>Reviewed</span></label>}</>}</div></div>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
@@ -1453,7 +1489,7 @@ export default function Home() {
                       </dl>
                     </section>
                   </div>
-                  {isSelectedPayee && <BankVerification check={check} />}
+                  {isSelectedPayee && <BankVerification check={check} onSelectCandidate={(candidateKey) => selectCheckBankDetails(check.id, candidateKey)} />}
                   <div className="registration-facts">
                     <div className={check.official.gstRegistered === null ? "registration-fact" : check.official.gstRegistered ? "registration-fact gst-active" : "registration-fact gst-inactive"}><span>GST</span><div><small>GST registration</small><b>{check.official.gstRegistered === null ? "Pending lookup" : check.official.gstRegistered ? "Registered" : "Not registered"}</b>{check.official.gstFrom && <p>From {check.official.gstFrom}</p>}</div></div>
                     <div className="registration-fact abn-date"><span>ABN</span><div><small>{check.official.status === "Active" ? "ABN registration date" : "ABN status effective date"}</small><b>{check.official.statusFrom || "Unavailable"}</b></div></div>
