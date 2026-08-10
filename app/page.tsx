@@ -644,8 +644,6 @@ export default function Home() {
     return [...map.values()];
   }, [documents]);
 
-  const unresolvedRoleDocuments = useMemo(() => documents.filter((document) => document.abns.length > 0 && document.selectedPayeeAbns.length !== 1), [documents]);
-
   const filteredRegister = useMemo(() => {
     const term = query.trim().toLowerCase();
     return register.filter((item) => {
@@ -1161,10 +1159,6 @@ export default function Home() {
 
   function completeVerificationBatch() {
     if (!latestChecks.length) return;
-    if (unresolvedRoleDocuments.length) {
-      setNotice(`Select the payee in Verification results for ${unresolvedRoleDocuments.length} file${unresolvedRoleDocuments.length === 1 ? "" : "s"} before completing this batch.`);
-      return;
-    }
     const payeeChecks = latestChecks.filter(isCheckSelectedPayee);
     if (!payeeChecks.length) {
       setNotice("Select at least one payee ABN before completing this batch.");
