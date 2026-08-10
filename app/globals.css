@@ -22,7 +22,7 @@ body { font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
 button, input, textarea { font: inherit; }
 button { color: inherit; }
 
-.app-shell { display: flex; min-height: 100vh; }
+.app-shell { display: flex; min-width: 0; min-height: 100vh; }
 .sidebar { width: 248px; background: #163d31; color: white; padding: 26px 18px 20px; display: flex; flex-direction: column; position: fixed; inset: 0 auto 0 0; z-index: 5; }
 .brand { display: flex; align-items: center; gap: 12px; padding: 0 10px 26px; border-bottom: 1px solid rgba(255,255,255,.12); }
 .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: #eef6f1; color: var(--green); font-family: Georgia, serif; font-size: 23px; font-weight: 800; }
@@ -46,7 +46,7 @@ button { color: inherit; }
 .local-note b { font-size: 11px; }
 .local-note small { font-size: 9px; color: #8db1a2; margin-top: 4px; }
 
-.workspace { margin-left: 248px; width: calc(100% - 248px); min-height: 100vh; }
+.workspace { margin-left: 248px; width: calc(100% - 248px); min-width: 0; min-height: 100vh; }
 .topbar { height: 105px; padding: 25px 38px 20px; background: rgba(255,255,255,.88); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 4; backdrop-filter: blur(12px); }
 .eyebrow { margin: 0 0 5px; font-size: 10px; font-weight: 800; color: var(--green-2); letter-spacing: .14em; text-transform: uppercase; }
 .topbar h1 { margin: 0; font-family: Georgia, "Songti SC", serif; font-size: 25px; font-weight: 600; letter-spacing: -.02em; }
@@ -276,6 +276,17 @@ button { color: inherit; }
 .table-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 9px; margin: 0 2px 8px; }
 .table-wrap { border: 1px solid var(--line); background: white; border-radius: 11px; overflow: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 1240px; }
+.records-table-wrap { overflow-x: hidden; }
+.records-table { min-width: 0; table-layout: fixed; }
+.records-table th, .records-table td { min-width: 0; overflow-wrap: anywhere; }
+.records-table th:nth-child(1) { width: 19%; }
+.records-table th:nth-child(2) { width: 10%; }
+.records-table th:nth-child(3) { width: 10%; }
+.records-table th:nth-child(4) { width: 15%; }
+.records-table th:nth-child(5) { width: 8%; }
+.records-table th:nth-child(6) { width: 20%; }
+.records-table th:nth-child(7) { width: 12%; }
+.records-table th:nth-child(8) { width: 96px; }
 th { background: #fafbf9; color: #738079; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--line); }
 td { padding: 14px 13px; border-bottom: 1px solid #edf0ec; font-size: 10px; vertical-align: middle; }
 tbody tr:last-child td { border-bottom: 0; }
@@ -290,7 +301,7 @@ td small { font-size: 8px; color: #89948e; margin-top: 4px; }
 .status-dot.cancelled { color: var(--red); }
 .status-dot.cancelled::before { background: #cf6258; }
 .gst-status.not-registered { color: var(--red); }
-.record-bank-cell { min-width: 230px; }
+.record-bank-cell { min-width: 0; }
 .record-bank-cell > div { min-width: 0; }
 .record-bank-cell small { line-height: 1.45; }
 .bank-edit-button { margin-top: 8px; padding: 4px 9px; border: 1px solid #cbdcd3; border-radius: 7px; background: #f2f8f5; color: var(--green-2); font-size: 11px; font-weight: 800; cursor: pointer; }
@@ -638,6 +649,13 @@ td small { font-size: 12px; }
   .stats-row { grid-template-columns: repeat(2, 1fr); }
   .table-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-actions { flex-wrap: wrap; }
+  .records-table th:nth-child(4), .records-table .register-row > td:nth-child(4) { display: none; }
+  .records-table th:nth-child(1) { width: 23%; }
+  .records-table th:nth-child(2) { width: 12%; }
+  .records-table th:nth-child(3) { width: 12%; }
+  .records-table th:nth-child(5) { width: 10%; }
+  .records-table th:nth-child(6) { width: 23%; }
+  .records-table th:nth-child(7) { width: 14%; }
 }
 
 @media (max-width: 720px) {
@@ -678,6 +696,35 @@ td small { font-size: 12px; }
   .page-content { padding: 18px 14px 34px; }
   .table-filters { width: 100%; align-items: stretch; flex-direction: column; }
   .search-box, .filter-select { width: 100%; }
+  .records-table-wrap { border: 0; overflow: visible; background: transparent; }
+  .records-table, .records-table tbody, .records-table .register-row, .records-table .history-row, .records-table .history-row > td { display: block; width: 100%; min-width: 0; }
+  .records-table thead { display: none; }
+  .records-table tbody { display: grid; gap: 12px; }
+  .records-table .register-row { padding: 7px 13px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: 12px; background: white; box-shadow: 0 5px 16px rgba(30,61,49,.04); }
+  .records-table .register-row > td, .records-table .register-row > td:nth-child(4) { width: auto; min-width: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); align-content: start; gap: 10px; padding: 12px 7px; border-bottom: 1px solid #edf0ec; font-size: 14px; }
+  .records-table .register-row > td::before { color: #74817a; font-size: 11px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+  .records-table .register-row > td:nth-child(1)::before { content: "Name / ABN"; }
+  .records-table .register-row > td:nth-child(2)::before { content: "ABN status"; }
+  .records-table .register-row > td:nth-child(3)::before { content: "GST"; }
+  .records-table .register-row > td:nth-child(4)::before { content: "Entity type"; }
+  .records-table .register-row > td:nth-child(5)::before { content: "Location"; }
+  .records-table .register-row > td:nth-child(6)::before { content: "Bank details"; }
+  .records-table .register-row > td:nth-child(7)::before { content: "Last checked"; }
+  .records-table .register-row > td:last-child { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding: 10px 7px; border-bottom: 0; }
+  .records-table .register-row > td:last-child::before { content: none; }
+  .records-table .record-bank-cell { grid-template-columns: 96px minmax(0, 1fr) auto; }
+  .records-table .bank-edit-button { align-self: start; margin-top: 0; }
+  .records-table .history-row { margin-top: -12px; }
+  .records-table .history-row > td { padding: 0; border: 1px solid #dce5e0; border-radius: 0 0 12px 12px; overflow: hidden; }
+  .records-table .register-row.expanded { border-radius: 12px 12px 0 0; }
+  .records-table .history-panel { padding: 16px; }
+  .records-table .history-panel-head { align-items: stretch; flex-direction: column; }
+  .records-table .history-panel-head > span { align-self: flex-start; }
+  .records-table .abr-history-heading, .records-table .abr-history-line { grid-template-columns: minmax(0, 1fr) 88px 88px; }
+  .records-table .abr-history-heading h4, .records-table .abr-history-line b { min-width: 0; }
+  .records-table .abr-history-heading span, .records-table .abr-history-line span { padding-inline: 10px; }
+  .records-table .abr-entity-type { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .records-table .abr-history-meta { align-items: flex-start; flex-direction: column; }
   .stats-row, .settings-grid { grid-template-columns: 1fr; }
   .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .stats-row article { min-width: 0; padding: 15px; }
@@ -784,4 +831,9 @@ td small { font-size: 12px; }
   .bank-match-summary em { grid-column: 2; justify-self: start; }
   .bank-detail-grid { grid-template-columns: 1fr; }
   .today-table td { grid-template-columns: 84px minmax(0, 1fr); gap: 9px; }
+  .records-table .register-row { grid-template-columns: 1fr; }
+  .records-table .register-row > td, .records-table .register-row > td:nth-child(4) { grid-template-columns: 86px minmax(0, 1fr); }
+  .records-table .register-row > td:last-child { grid-column: auto; }
+  .records-table .record-bank-cell { grid-template-columns: 86px minmax(0, 1fr); }
+  .records-table .bank-edit-button { grid-column: 2; justify-self: start; }
 }
