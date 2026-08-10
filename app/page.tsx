@@ -3,6 +3,7 @@
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { classifyAbnRoles, type AbnRoleCandidate } from "./abn-role";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
+import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 
 type Tab = "verify" | "today" | "register" | "changes" | "settings";
@@ -395,17 +396,7 @@ async function readContract(file: File) {
     for (let i = 1; i <= pdf.numPages; i += 1) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
-      const positioned = content.items.flatMap((item) => {
-        if (!("str" in item) || !item.str.trim()) return [];
-        return [{ text: item.str.trim(), x: item.transform[4], y: item.transform[5] }];
-      }).sort((a, b) => Math.abs(b.y - a.y) > 2 ? b.y - a.y : a.x - b.x);
-      const rows: { y: number; items: { text: string; x: number }[] }[] = [];
-      positioned.forEach((item) => {
-        const row = rows.find((candidate) => Math.abs(candidate.y - item.y) <= 2);
-        if (row) row.items.push({ text: item.text, x: item.x });
-        else rows.push({ y: item.y, items: [{ text: item.text, x: item.x }] });
-      });
-      pages.push(rows.sort((a, b) => b.y - a.y).map((row) => row.items.sort((a, b) => a.x - b.x).map((item) => item.text).join(" ")).join("\n"));
+      pages.push(pdfTextRows(content.items.filter((item) => "str" in item) as { str: string; transform: number[] }[]));
     }
     return pages.join("\n");
   }
