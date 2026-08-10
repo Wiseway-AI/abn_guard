@@ -98,37 +98,6 @@ button { color: inherit; }
 .empty-state h3 { color: var(--ink); margin: 13px 0 6px; font-family: Georgia, "Songti SC", serif; font-size: 16px; }
 .empty-state p { font-size: 10px; line-height: 1.6; max-width: 280px; margin: 0; }
 .check-list { display: block; overflow: visible; }
-.payee-detection-summary { min-height: 46px; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; padding: 10px 12px; border: 1px solid #d8e5de; border-radius: 9px; background: #f5faf7; }
-.payee-detection-summary b { color: var(--green); font-size: 12px; }
-.payee-detection-summary span { color: var(--muted); font-size: 11px; font-weight: 700; }
-.payee-review-list { display: grid; gap: 9px; margin: 9px 0; }
-.payee-review-card { overflow: hidden; border: 1px solid #cfe0d7; border-radius: 10px; background: white; }
-.payee-review-card.unresolved { border-color: #e3c592; background: #fffaf1; }
-.payee-review-head { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-bottom: 1px solid #e7ece9; }
-.payee-review-head > div { min-width: 0; }
-.payee-review-head b, .payee-review-head small { display: block; }
-.payee-review-head b { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.payee-review-head small { margin-top: 3px; color: var(--muted); font-size: 9px; }
-.payee-review-head > span { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; background: #f9e6c7; color: #885817; font-size: 9px; font-weight: 800; }
-.payee-review-head > span.resolved { background: #dff1e8; color: #236449; }
-.payee-candidates { display: grid; }
-.payee-candidate { min-height: 64px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border-bottom: 1px solid #edf0ee; }
-.payee-candidate:last-child { border-bottom: 0; }
-.payee-candidate.selected { background: #f3faf6; }
-.payee-candidate.ignored { background: #fafbfa; }
-.payee-candidate-main { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.payee-candidate-main > span { width: 30px; height: 30px; flex: 0 0 30px; display: grid; place-items: center; border-radius: 8px; background: #edf0ee; color: #6d7872; font-size: 12px; font-weight: 900; }
-.payee-candidate.selected .payee-candidate-main > span { background: #dceee5; color: var(--green); }
-.payee-candidate-main > div { min-width: 0; }
-.payee-candidate-main b, .payee-candidate-main small { display: block; }
-.payee-candidate-main b { font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
-.payee-candidate-main small { margin-top: 3px; color: var(--muted); font-family: monospace; font-size: 9px; }
-.payee-candidate-action { flex: 0 0 auto; display: grid; justify-items: end; gap: 3px; }
-.payee-candidate-action em { color: #5f6c66; font-size: 9px; font-style: normal; font-weight: 800; }
-.payee-candidate.selected .payee-candidate-action em { color: var(--green); }
-.payee-candidate-action small { color: #8a948f; font-size: 8px; }
-.payee-candidate-action button { min-height: 30px; margin-top: 2px; padding: 0 9px; border: 1px solid #abc7b9; border-radius: 7px; background: white; color: var(--green); font-size: 9px; font-weight: 800; cursor: pointer; }
-.payee-candidate-action button:hover { border-color: var(--green); background: #eef7f2; }
 .result-navigation { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .result-navigation > span { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; }
 .result-navigation button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid #d8e1dc; border-radius: 8px; background: white; color: #46564f; font-size: 18px; line-height: 1; cursor: pointer; }
@@ -143,7 +112,13 @@ button { color: inherit; }
 .check-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .check-card-top small { font-family: monospace; color: var(--muted); font-size: 9px; }
 .check-card-top h3 { margin: 4px 0 0; font-size: 12px; }
+.role-confidence { margin: 4px 0 0; color: #7a8580; font-size: 9px; }
 .check-result-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.payee-role-pill { padding: 5px 8px; border-radius: 999px; background: #edf0ee; color: #65716b; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.payee-role-pill.selected { background: #dff1e8; color: #226449; }
+.payee-role-pill.ignored { background: #f0f2f1; color: #6d7772; }
+.select-payee-result { min-height: 30px; padding: 0 10px; border: 1px solid #9fbeaf; border-radius: 8px; background: white; color: var(--green); font-size: 9px; font-weight: 800; cursor: pointer; }
+.select-payee-result:hover { border-color: var(--green); background: #edf7f2; }
 .result-pill { border-radius: 999px; padding: 5px 8px; font-size: 9px; font-weight: 700; white-space: nowrap; }
 .result-pill.ok { color: var(--green); background: var(--mint); }
 .result-pill.issue { color: #955615; background: #fbe9ca; }
@@ -717,15 +692,10 @@ td small { font-size: 12px; }
   .dropzone strong { font-size: 15px; }
   .dropzone small { font-size: 12px; line-height: 1.5; }
   .file-recognition-summary { min-height: 54px; }
-  .payee-detection-summary { align-items: flex-start; flex-direction: column; }
-  .payee-review-head { align-items: flex-start; }
-  .payee-candidate { align-items: stretch; flex-direction: column; }
-  .payee-candidate-action { width: 100%; grid-template-columns: 1fr auto; align-items: center; justify-items: start; }
-  .payee-candidate-action small { justify-self: end; }
-  .payee-candidate-action button { grid-column: 1 / -1; width: 100%; min-height: 40px; }
   .check-card { padding: 13px; }
   .check-card-top { align-items: stretch; flex-direction: column; }
-  .check-result-actions { width: 100%; align-items: center; justify-content: space-between; flex-direction: row; }
+  .check-result-actions { width: 100%; align-items: center; justify-content: space-between; flex-flow: row wrap; }
+  .select-payee-result { min-height: 40px; margin-left: auto; }
   .review-check { min-height: 40px; padding: 7px 10px; }
   .review-check input { width: 18px; height: 18px; }
   .verification-compare { grid-template-columns: 1fr; }

@@ -62,7 +62,6 @@ type ContractDocument = {
   abnRoles: AbnRoleCandidate[];
   selectedPayeeAbns: string[];
   payeeSelection: "automatic" | "manual" | "unresolved";
-  abnEntityNames: Record<string, string>;
   uploadedAt: string;
 };
 
@@ -472,6 +471,12 @@ function isEntityNameIssue(issue: string) {
   return issue === "Company name was not found in the file" || /^File name “.*” does not match the registered entity name$/.test(issue);
 }
 
+function isBankDetailIssue(issue: string) {
+  return issue === "Multiple different bank details were found across the uploaded files for this ABN."
+    || issue === "First bank details found for this ABN. Confirm the BSB and account number before saving."
+    || issue === "Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.";
+}
+
 function TodaySection({ title, subtitle, items, onVerify, onOpenFile }: { title: string; subtitle: string; items: TodayReview[]; onVerify?: (id: string) => void; onOpenFile: (file: TodayFileRef) => void }) {
   return <section className="panel today-section">
     <div className="today-section-heading">
@@ -609,12 +614,12 @@ export default function Home() {
     const map = new Map<string, DetectedEntity>();
     documents.forEach((document) => {
       const documentBankDetails = extractBankDetails(document.text);
-      document.selectedPayeeAbns.forEach((abn) => {
+      document.abns.forEach((abn) => {
         const context = contextForAbn(document.text, abn);
         const name = claimsFromContext(context).contractName;
         const existing = map.get(abn);
         const bankDetailCandidates = new Map((existing?.bankDetailCandidates ?? []).map((candidate) => [bankDetailsKey(candidate.details), candidate]));
-        if (documentBankDetails) {
+        if (documentBankDetails && document.selectedPayeeAbns.includes(abn)) {
           const key = bankDetailsKey(documentBankDetails);
           const previousCandidate = bankDetailCandidates.get(key);
           bankDetailCandidates.set(key, {
@@ -636,9 +641,7 @@ export default function Home() {
     return [...map.values()];
   }, [documents]);
 
-  const roleReviewDocuments = useMemo(() => documents.filter((document) => document.abns.length > 1 || (document.abns.length > 0 && document.payeeSelection === "unresolved")), [documents]);
   const unresolvedRoleDocuments = useMemo(() => documents.filter((document) => document.abns.length > 0 && document.selectedPayeeAbns.length !== 1), [documents]);
-  const ignoredPayerCount = useMemo(() => documents.reduce((sum, document) => sum + document.abnRoles.filter((candidate) => candidate.role === "payer" && !document.selectedPayeeAbns.includes(candidate.abn)).length, 0), [documents]);
 
   const filteredRegister = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -672,7 +675,7 @@ export default function Home() {
   const currentTodayItems = useMemo(() => todayReviews.filter((item) => todayReviewDayKey(item.completedAt || item.uploadedAt) === todayDayKey), [todayDayKey, todayReviews]);
   const doubleCheckItems = useMemo(() => currentTodayItems.filter((item) => item.status === "double-check"), [currentTodayItems]);
   const verifiedTodayItems = useMemo(() => currentTodayItems.filter((item) => item.status === "verified"), [currentTodayItems]);
-  const issueCount = latestChecks.filter((check) => !checkIsVerified(check)).length;
+  const issueCount = latestChecks.filter((check) => isCheckSelectedPayee(check) && !checkIsVerified(check)).length;
 
   useEffect(() => {
     setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0)));
@@ -942,7 +945,6 @@ export default function Home() {
           abnRoles,
           selectedPayeeAbns,
           payeeSelection: selectedPayeeAbns.length === 1 ? "automatic" : "unresolved",
-          abnEntityNames,
           uploadedAt: new Date().toISOString(),
         });
       } catch {
@@ -951,28 +953,84 @@ export default function Home() {
     }
     setDocuments((previous) => [...previous, ...parsed]);
     setIsParsing(false);
-    const found = parsed.reduce((sum, item) => sum + item.selectedPayeeAbns.length, 0);
-    const ignored = parsed.reduce((sum, item) => sum + item.abnRoles.filter((candidate) => candidate.role === "payer" && !item.selectedPayeeAbns.includes(candidate.abn)).length, 0);
-    const unresolved = parsed.filter((item) => item.abns.length > 0 && item.selectedPayeeAbns.length !== 1).length;
-    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"}: ${found} payee ABN${found === 1 ? "" : "s"} found${ignored ? `, ${ignored} customer ABN${ignored === 1 ? "" : "s"} ignored` : ""}${unresolved ? `. Select a payee for ${unresolved} file${unresolved === 1 ? "" : "s"}.` : failed ? `. ${failed} file${failed === 1 ? "" : "s"} could not be read.` : "."}`);
+    const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
+    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}${failed ? `. ${failed} file${failed === 1 ? "" : "s"} could not be read.` : "."}`);
   }
 
-  function selectDocumentPayee(documentId: string, abn: string) {
-    setDocuments((previous) => previous.map((document) => document.id === documentId ? {
+  function isCheckSelectedPayee(check: ContractCheck) {
+    return documents.some((document) => check.fileIds.includes(document.id) && document.selectedPayeeAbns.includes(check.abn));
+  }
+
+  function bankVerificationForDocuments(abn: string, sourceDocuments: ContractDocument[], official: AbnRecord) {
+    const savedBankDetails = register.find((record) => record.abn === abn)?.bankDetails;
+    const candidates = new Map<string, BankDetailsCandidate>();
+    sourceDocuments.forEach((document) => {
+      const details = extractBankDetails(document.text);
+      if (!details) return;
+      const key = bankDetailsKey(details);
+      const previous = candidates.get(key);
+      candidates.set(key, { details, fileNames: [...new Set([...(previous?.fileNames ?? []), document.name])] });
+    });
+    const bankDetailCandidates = [...candidates.values()];
+    const fileBankDetails = bankDetailCandidates[0]?.details;
+    const multipleBankDetails = bankDetailCandidates.length > 1;
+    const bankDetailStatus: ContractCheck["bankDetailStatus"] = !fileBankDetails
+      ? "not-found"
+      : multipleBankDetails
+        ? "multiple"
+        : !savedBankDetails
+          ? "first-seen"
+          : bankDetailsMatch(fileBankDetails, savedBankDetails)
+            ? "match"
+            : "mismatch";
+    const bankIssues: string[] = [];
+    if (multipleBankDetails) bankIssues.push("Multiple different bank details were found across the uploaded files for this ABN.");
+    else if (bankDetailStatus === "first-seen") bankIssues.push("First bank details found for this ABN. Confirm the BSB and account number before saving.");
+    else if (bankDetailStatus === "mismatch") bankIssues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
+    return {
+      fileBankDetails,
+      fileBankDetailCandidates: bankDetailCandidates,
+      savedBankDetails,
+      bankDetailStatus,
+      bankIssues,
+      official: { ...official, bankDetails: multipleBankDetails ? savedBankDetails : fileBankDetails ?? savedBankDetails },
+    };
+  }
+
+  function selectPayeeFromResult(check: ContractCheck) {
+    const affectedFileIds = new Set(check.fileIds);
+    const nextDocuments = documents.map((document) => affectedFileIds.has(document.id) && document.abns.includes(check.abn) ? {
       ...document,
-      selectedPayeeAbns: [abn],
-      payeeSelection: "manual",
-    } : document));
-    setNotice(`${formatAbn(abn)} selected as the payee ABN. Bank details from this file will only be linked to this ABN.`);
+      selectedPayeeAbns: [check.abn],
+      payeeSelection: "manual" as const,
+    } : document);
+    setDocuments(nextDocuments);
+    setChecks((previous) => previous.map((item) => {
+      const selectedSourceDocuments = nextDocuments.filter((document) => item.fileIds.includes(document.id) && document.selectedPayeeAbns.includes(item.abn));
+      const issuesWithoutBank = item.issues.filter((issue) => !isBankDetailIssue(issue));
+      if (!selectedSourceDocuments.length) {
+        const savedBankDetails = register.find((record) => record.abn === item.abn)?.bankDetails;
+        return {
+          ...item,
+          issues: issuesWithoutBank,
+          reviewed: false,
+          fileBankDetails: undefined,
+          fileBankDetailCandidates: [],
+          savedBankDetails,
+          bankDetailStatus: "not-found",
+          official: { ...item.official, bankDetails: savedBankDetails },
+        };
+      }
+      const bank = bankVerificationForDocuments(item.abn, selectedSourceDocuments, item.official);
+      const { bankIssues, ...bankVerification } = bank;
+      return { ...item, ...bankVerification, issues: [...issuesWithoutBank, ...bankIssues], reviewed: false };
+    }));
+    setNotice(`${check.official.entityName || formatAbn(check.abn)} selected as the payee. Bank details will only be linked to this ABN.`);
   }
 
   async function verifyContracts() {
-    if (unresolvedRoleDocuments.length) {
-      setNotice(`Select the payee ABN for ${unresolvedRoleDocuments.length} file${unresolvedRoleDocuments.length === 1 ? "" : "s"} before verification.`);
-      return;
-    }
     if (!detectedEntities.length) {
-      setNotice("No payee ABN was found in the uploaded contracts.");
+      setNotice("No valid 11-digit ABN was found in the uploaded contracts.");
       return;
     }
     setBusy(true);
@@ -1032,7 +1090,7 @@ export default function Home() {
     setChecks((previous) => [...nextChecks, ...previous].slice(0, 100));
     setActiveCheckIndex(0);
     setBusy(false);
-    setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}, ${nextChecks.filter((item) => item.issues.length).length} requiring attention`);
+    setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}. Review the suggested payee before completing this batch.`);
   }
 
   function clearVerificationResults() {
@@ -1082,8 +1140,17 @@ export default function Home() {
 
   function completeVerificationBatch() {
     if (!latestChecks.length) return;
+    if (unresolvedRoleDocuments.length) {
+      setNotice(`Select the payee in Verification results for ${unresolvedRoleDocuments.length} file${unresolvedRoleDocuments.length === 1 ? "" : "s"} before completing this batch.`);
+      return;
+    }
+    const payeeChecks = latestChecks.filter(isCheckSelectedPayee);
+    if (!payeeChecks.length) {
+      setNotice("Select at least one payee ABN before completing this batch.");
+      return;
+    }
     const completedAt = new Date().toISOString();
-    const completed: TodayReview[] = latestChecks.map((check) => ({
+    const completed: TodayReview[] = payeeChecks.map((check) => ({
       id: crypto.randomUUID(),
       sourceCheckId: check.id,
       batchId: check.batchId,
@@ -1096,7 +1163,7 @@ export default function Home() {
       official: check.official,
       files: check.fileIds.map((fileId) => documents.find((document) => document.id === fileId)).filter((document): document is ContractDocument => Boolean(document)).map((document) => ({ id: document.id, name: document.name })),
     }));
-    const verifiedRecords = latestChecks.filter(checkIsVerified).map((check) => check.official);
+    const verifiedRecords = payeeChecks.filter(checkIsVerified).map((check) => check.official);
     setTodayReviews((previous) => [...completed, ...previous].slice(0, 500));
     addVerifiedRecords(verifiedRecords);
     documents.forEach((document) => URL.revokeObjectURL(document.url));
@@ -1357,23 +1424,7 @@ export default function Home() {
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
               <div className="file-recognition-summary"><span>Files recognised</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
-              {documents.length > 0 && <div className="payee-detection-summary"><b>{detectedEntities.length} payee ABN{detectedEntities.length === 1 ? "" : "s"} found</b><span>{ignoredPayerCount} customer ABN{ignoredPayerCount === 1 ? "" : "s"} ignored</span></div>}
-              {roleReviewDocuments.length > 0 && <div className="payee-review-list">{roleReviewDocuments.map((document) => <section className={document.payeeSelection === "unresolved" ? "payee-review-card unresolved" : "payee-review-card"} key={document.id}>
-                <div className="payee-review-head"><div><b>{document.name}</b><small>{document.abns.length} ABNs found</small></div>{document.payeeSelection === "unresolved" ? <span>Selection required</span> : <span className="resolved">Payee identified</span>}</div>
-                <div className="payee-candidates">{document.abnRoles.map((candidate) => {
-                  const isSelected = document.selectedPayeeAbns.includes(candidate.abn);
-                  const nearbyName = claimsFromContext(contextForAbn(document.text, candidate.abn)).contractName;
-                  const entityName = document.abnEntityNames[candidate.abn] || nearbyName || `ABN ${formatAbn(candidate.abn)}`;
-                  const roleLabel = isSelected
-                    ? document.payeeSelection === "manual" ? "Selected payee" : "Suggested payee"
-                    : candidate.role === "payer" ? "Customer / ignored" : "Not selected";
-                  return <div className={isSelected ? "payee-candidate selected" : candidate.role === "payer" ? "payee-candidate ignored" : "payee-candidate"} key={candidate.abn} title={candidate.reasons.join(" · ")}>
-                    <div className="payee-candidate-main"><span>{isSelected ? "✓" : candidate.role === "payer" ? "×" : "?"}</span><div><b>{entityName}</b><small>{formatAbn(candidate.abn)}</small></div></div>
-                    <div className="payee-candidate-action"><em>{roleLabel}</em><small>{Math.round(candidate.confidence * 100)}% confidence</small>{!isSelected && <button type="button" aria-label={`Use ${entityName} as the payee`} onClick={() => selectDocumentPayee(document.id, candidate.abn)}>Use as payee</button>}</div>
-                  </div>;
-                })}</div>
-              </section>)}</div>}
-              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length || unresolvedRoleDocuments.length > 0} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : unresolvedRoleDocuments.length ? "Select payee first" : `Verify ${detectedEntities.length} payee ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
+              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : `Verify ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
             </article>
 
             <article className="panel results-panel">
@@ -1383,12 +1434,16 @@ export default function Home() {
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
                 const officialLocation = [check.official.state, check.official.postcode].filter(Boolean).join(" ");
                 const sourceDocuments = documents.filter((document) => check.fileIds?.includes(document.id));
+                const isSelectedPayee = isCheckSelectedPayee(check);
+                const roleCandidate = sourceDocuments.flatMap((document) => document.abnRoles).filter((candidate) => candidate.abn === check.abn).sort((left, right) => right.confidence - left.confidence)[0];
+                const manuallySelected = isSelectedPayee && sourceDocuments.some((document) => document.selectedPayeeAbns.includes(check.abn) && document.payeeSelection === "manual");
+                const roleLabel = isSelectedPayee ? manuallySelected ? "Selected payee" : "Suggested payee" : roleCandidate?.role === "payer" ? "Customer / ignored" : "Not selected";
                 const nameComparison = safeContractName === "Not found in file" || !check.official.entityName ? null : compareCompanyNames(safeContractName, check.official.entityName);
                 const abnMatch = onlyDigits(check.abn) === onlyDigits(check.official.abn);
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
                 const isVerified = checkIsVerified(check);
-                return <div className={!isVerified ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3></div><div className="check-result-actions"><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>Reviewed</span></label>}</div></div>
+                return <div className={isSelectedPayee && !isVerified ? "check-card alert" : "check-card"} key={check.id}>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>Reviewed</span></label>}</>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
@@ -1407,7 +1462,7 @@ export default function Home() {
                       </dl>
                     </section>
                   </div>
-                  <BankVerification check={check} />
+                  {isSelectedPayee && <BankVerification check={check} />}
                   <div className="registration-facts">
                     <div className={check.official.gstRegistered === null ? "registration-fact" : check.official.gstRegistered ? "registration-fact gst-active" : "registration-fact gst-inactive"}><span>GST</span><div><small>GST registration</small><b>{check.official.gstRegistered === null ? "Pending lookup" : check.official.gstRegistered ? "Registered" : "Not registered"}</b>{check.official.gstFrom && <p>From {check.official.gstFrom}</p>}</div></div>
                     <div className="registration-fact abn-date"><span>ABN</span><div><small>{check.official.status === "Active" ? "ABN registration date" : "ABN status effective date"}</small><b>{check.official.statusFrom || "Unavailable"}</b></div></div>
