@@ -1197,9 +1197,11 @@ export default function Home() {
     setDocuments([]);
     setChecks([]);
     setActiveCheckIndex(0);
-    setTab("today");
+    setEditingCheckNameId(null);
+    setCheckNameDraft("");
+    if (fileRef.current) fileRef.current.value = "";
     const doubleChecks = completed.length - verifiedRecords.length;
-    setNotice(`Batch completed: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent for double check` : ""}.`);
+    setNotice(`Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Today for double check` : ""}.`);
   }
 
   function verifyTodayReview(reviewId: string) {
