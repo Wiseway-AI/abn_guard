@@ -2,6 +2,7 @@
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { classifyAbnRoles, type AbnRoleCandidate } from "./abn-role";
+import { accountFileKey, accountStorageKey } from "./account-scope";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
@@ -164,30 +165,27 @@ function openFileDatabase() {
   });
 }
 
-async function storeOriginalFile(id: string, file: File) {
+async function storeOriginalFile(accountId: string, id: string, file: File) {
   const database = await openFileDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(FILE_STORE, "readwrite");
-    transaction.objectStore(FILE_STORE).put(file, id);
+    transaction.objectStore(FILE_STORE).put(file, accountFileKey(accountId, id));
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
   });
   database.close();
 }
 
-async function loadOriginalFile(id: string) {
+async function loadOriginalFile(accountId: string, id: string) {
   const database = await openFileDatabase();
-  const file = await new Promise<Blob | undefined>((resolve, reject) => {
-    const request = database.transaction(FILE_STORE, "readonly").objectStore(FILE_STORE).get(id);
+  const read = (key: string) => new Promise<Blob | undefined>((resolve, reject) => {
+    const request = database.transaction(FILE_STORE, "readonly").objectStore(FILE_STORE).get(key);
     request.onsuccess = () => resolve(request.result as Blob | undefined);
     request.onerror = () => reject(request.error);
   });
+  const file = await read(accountFileKey(accountId, id)) ?? await read(id);
   database.close();
   return file;
-}
-
-function accountStorage(accountId: string, key: string) {
-  return `abn-guard-account-${accountId}-${key}-v1`;
 }
 
 function onlyDigits(value: string) {
@@ -558,19 +556,19 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated || !currentAccount) return;
-    localStorage.setItem(accountStorage(currentAccount.id, "register"), JSON.stringify(register));
+    localStorage.setItem(accountStorageKey(currentAccount.id, "register"), JSON.stringify(register));
   }, [register, currentAccount, hydrated]);
   useEffect(() => {
     if (!hydrated || !currentAccount) return;
-    localStorage.setItem(accountStorage(currentAccount.id, "changes"), JSON.stringify(changes));
+    localStorage.setItem(accountStorageKey(currentAccount.id, "changes"), JSON.stringify(changes));
   }, [changes, currentAccount, hydrated]);
   useEffect(() => {
     if (!hydrated || !currentAccount) return;
-    localStorage.setItem(accountStorage(currentAccount.id, "history"), JSON.stringify(history));
+    localStorage.setItem(accountStorageKey(currentAccount.id, "history"), JSON.stringify(history));
   }, [history, currentAccount, hydrated]);
   useEffect(() => {
     if (!hydrated || !currentAccount) return;
-    localStorage.setItem(accountStorage(currentAccount.id, "today"), JSON.stringify(todayReviews));
+    localStorage.setItem(accountStorageKey(currentAccount.id, "today"), JSON.stringify(todayReviews));
   }, [todayReviews, currentAccount, hydrated]);
 
   useEffect(() => {
@@ -601,16 +599,16 @@ export default function Home() {
   }, [schedule, lastRefresh, register, apiConfigured, busy, hydrated, currentAccount]);
 
   function loadAccountData(accountId: string) {
-    setRegister(JSON.parse(localStorage.getItem(accountStorage(accountId, "register")) ?? "[]"));
-    localStorage.removeItem(accountStorage(accountId, "checks"));
+    setRegister(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "register")) ?? "[]"));
+    localStorage.removeItem(accountStorageKey(accountId, "checks"));
     setChecks([]);
-    setTodayReviews(JSON.parse(localStorage.getItem(accountStorage(accountId, "today")) ?? "[]"));
-    setChanges(JSON.parse(localStorage.getItem(accountStorage(accountId, "changes")) ?? "[]"));
-    setHistory(JSON.parse(localStorage.getItem(accountStorage(accountId, "history")) ?? "[]"));
+    setTodayReviews(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "today")) ?? "[]"));
+    setChanges(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "changes")) ?? "[]"));
+    setHistory(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "history")) ?? "[]"));
     setExpandedAbns([]);
     setLoadingHistoryAbns([]);
-    setSchedule(localStorage.getItem(accountStorage(accountId, "schedule")) ?? "daily");
-    setLastRefresh(localStorage.getItem(accountStorage(accountId, "lastRefresh")) ?? "");
+    setSchedule(localStorage.getItem(accountStorageKey(accountId, "schedule")) ?? "daily");
+    setLastRefresh(localStorage.getItem(accountStorageKey(accountId, "lastRefresh")) ?? "");
     setDocuments([]);
   }
 
@@ -780,39 +778,45 @@ export default function Home() {
     event.preventDefault();
     setAuthError("");
     const email = authEmail.trim().toLowerCase();
-    if (authMode === "signin" && email === "admin") {
+    if (authMode === "signin" && !email.includes("@")) {
       if (!authPassword) {
-        setAuthError("Enter the administrator password.");
+        setAuthError("Enter your password.");
         return;
       }
       try {
-        const response = await fetch("/api/admin-auth", {
+        const response = await fetch("/api/account-auth", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: email, password: authPassword }),
         });
-        const result = await response.json() as { authenticated?: boolean; error?: string };
+        const result = await response.json() as { authenticated?: boolean; error?: string; account?: { id: string; username: string; companyName: string; setupComplete: boolean } };
         if (!response.ok || !result.authenticated) {
-          setAuthError(result.error || "Administrator sign-in failed.");
+          setAuthError(result.error || "Sign-in failed.");
           return;
         }
-        const adminAccount: Account = {
-          id: "administrator",
-          companyName: "Administrator",
-          email: "admin",
+        if (!result.account) {
+          setAuthError("This account is not available.");
+          return;
+        }
+        const existingAccount = accounts.find((account) => account.id === result.account?.id);
+        const managedAccount: Account = {
+          ...existingAccount,
+          id: result.account.id,
+          companyName: existingAccount?.companyName || result.account.companyName,
+          email: result.account.username,
           passwordHash: "server-managed",
-          createdAt: new Date().toISOString(),
-          setupComplete: true,
-          ownAbn: "",
+          createdAt: existingAccount?.createdAt || new Date().toISOString(),
+          setupComplete: existingAccount?.setupComplete ?? result.account.setupComplete,
+          ownAbn: existingAccount?.ownAbn || "",
         };
-        const nextAccounts = [...accounts.filter((account) => account.id !== adminAccount.id), adminAccount];
+        const nextAccounts = [...accounts.filter((account) => account.id !== managedAccount.id), managedAccount];
         persistAccounts(nextAccounts);
-        localStorage.setItem(STORAGE.session, adminAccount.id);
-        setCurrentAccount(adminAccount);
-        loadAccountData(adminAccount.id);
+        localStorage.setItem(STORAGE.session, managedAccount.id);
+        setCurrentAccount(managedAccount);
+        loadAccountData(managedAccount.id);
         setAuthPassword("");
       } catch {
-        setAuthError("Administrator sign-in is temporarily unavailable.");
+        setAuthError("Sign-in is temporarily unavailable.");
       }
       return;
     }
@@ -937,7 +941,7 @@ export default function Home() {
               : candidate);
           }
         }
-        await storeOriginalFile(id, file);
+        await storeOriginalFile(currentAccount.id, id, file);
         parsed.push({
           id,
           name: file.name,
@@ -1098,7 +1102,7 @@ export default function Home() {
   function clearVerificationResults() {
     setChecks([]);
     setActiveCheckIndex(0);
-    if (currentAccount) localStorage.removeItem(accountStorage(currentAccount.id, "checks"));
+    if (currentAccount) localStorage.removeItem(accountStorageKey(currentAccount.id, "checks"));
     setNotice("Verification results cleared.");
   }
 
@@ -1216,7 +1220,7 @@ export default function Home() {
     const preview = window.open("about:blank", "_blank");
     if (preview) preview.opener = null;
     try {
-      const original = await loadOriginalFile(file.id);
+      const original = await loadOriginalFile(currentAccount.id, file.id);
       if (!original) throw new Error("Original file is unavailable");
       const url = URL.createObjectURL(original);
       if (preview) preview.location.href = url;
@@ -1263,7 +1267,7 @@ export default function Home() {
     addHistoryEntries(checkedRecords, "Register update");
     setChanges((previous) => [...logs, ...previous].slice(0, 200));
     setLastRefresh(refreshedAt);
-    localStorage.setItem(accountStorage(currentAccount.id, "lastRefresh"), refreshedAt);
+    localStorage.setItem(accountStorageKey(currentAccount.id, "lastRefresh"), refreshedAt);
     setBusy(false);
     setNotice(logs.length ? `Update complete. ${logs.length} change${logs.length === 1 ? "" : "s"} found.` : "Update complete. No changes found.");
   }
@@ -1359,7 +1363,7 @@ export default function Home() {
 
   function saveSettings() {
     if (!currentAccount) return;
-    localStorage.setItem(accountStorage(currentAccount.id, "schedule"), schedule);
+    localStorage.setItem(accountStorageKey(currentAccount.id, "schedule"), schedule);
     setNotice("Update settings saved.");
   }
 
