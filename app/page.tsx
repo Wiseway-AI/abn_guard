@@ -509,6 +509,7 @@ export default function Home() {
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  const [showAuth, setShowAuth] = useState(false);
   const [setupAbn, setSetupAbn] = useState("");
   const [setupRecord, setSetupRecord] = useState<AbnRecord | null>(null);
   const [setupError, setSetupError] = useState("");
@@ -1365,27 +1366,81 @@ export default function Home() {
   if (!hydrated) return <div className="app-loading">Loading ABN Guard…</div>;
 
   if (!currentAccount) {
+    const openAuth = (mode: "signin" | "register") => {
+      setAuthMode(mode);
+      setAuthError("");
+      setShowAuth(true);
+    };
+
     return (
-      <main className="auth-shell">
-        <section className="auth-story">
-          <div className="auth-brand"><span className="brand-mark">A</span><strong>ABN Guard</strong></div>
-          <div className="auth-copy"><p className="eyebrow">Supplier due diligence</p><h1>Know who you are contracting with.</h1><p>Verify ABNs and GST status from contracts, maintain a supplier register, and monitor changes over time.</p></div>
-          <div className="auth-points"><span>01</span><p><b>Contract intelligence</b><small>Extract ABNs from multiple PDF, DOCX and TXT files.</small></p><span>02</span><p><b>Ongoing monitoring</b><small>Keep each company workspace separate and up to date.</small></p></div>
-          <small className="prototype-note">Local prototype · account data stays on this device</small>
+      <main className="landing-shell">
+        <nav className="landing-nav" aria-label="Main navigation">
+          <a className="landing-brand" href="#top" aria-label="ABN Guard home"><span>A</span><strong>ABN Guard</strong></a>
+          <div className="landing-nav-links"><a href="#product">Product</a><a href="#how-it-works">How it works</a><a href="#security">Security</a></div>
+          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Get started <span>↗</span></button></div>
+        </nav>
+
+        <section className="landing-hero" id="top">
+          <div className="landing-hero-copy">
+            <div className="landing-kicker"><span>✓</span> Built for Australian finance teams</div>
+            <h1>Every supplier.<br /><em>Verified.</em></h1>
+            <p>Turn contracts and invoices into verified supplier records. Check ABNs, GST status and bank details before money moves.</p>
+            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Start verifying <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
+            <div className="landing-trust"><span><b>✓</b> No credit card</span><span><b>✓</b> Set up in minutes</span><span><b>✓</b> Australian data</span></div>
+          </div>
+
+          <div className="landing-product-shot" aria-label="ABN Guard verification dashboard preview">
+            <div className="shot-window">
+              <div className="shot-top"><div className="shot-logo"><span>A</span><b>ABN Guard</b></div><div className="shot-date">12 AUG 2026</div><div className="shot-user">PP</div></div>
+              <div className="shot-layout">
+                <aside className="shot-side"><div className="shot-nav active"><span>⌕</span>Check</div><div className="shot-nav"><span>✓</span>Today <b>3</b></div><div className="shot-nav"><span>▤</span>Records</div><div className="shot-nav"><span>!</span>Alerts</div><small>WORKSPACE</small><div className="shot-company"><span>AC</span><p><b>Acme Co.</b><em>Finance team</em></p></div></aside>
+                <div className="shot-main"><div className="shot-heading"><div><span>SUPPLIER VERIFICATION</span><h2>Check a supplier</h2></div><i>ABR connected</i></div><div className="shot-stats"><div><small>CHECKS TODAY</small><b>24</b><em>↑ 18%</em></div><div><small>VERIFIED</small><b>21</b><em>87.5%</em></div><div className="attention"><small>NEEDS REVIEW</small><b>3</b><em>Action needed</em></div></div><div className="shot-verify"><section><span className="shot-step">1</span><h3>Add contract</h3><div className="shot-drop"><span>↥</span><b>Drop documents here</b><small>PDF, DOCX or TXT</small></div><button>Verify supplier <span>→</span></button></section><section><div className="shot-result-title"><div><span className="shot-step">2</span><h3>Verification result</h3></div><i>PASS</i></div><div className="shot-entity"><span>AC</span><div><small>REGISTERED ENTITY</small><b>ACME SUPPLIES PTY LTD</b><em>ABN 53 004 085 616</em></div><i>✓</i></div><div className="shot-check-row"><span>ABN status</span><b>● Active</b></div><div className="shot-check-row"><span>GST registration</span><b>✓ Registered</b></div><div className="shot-check-row"><span>Bank details</span><b>✓ Match</b></div></section></div></div>
+              </div>
+            </div>
+            <div className="shot-float-card"><span>✓</span><div><b>Supplier verified</b><small>All details match the official record</small></div></div>
+            <div className="shot-float-status"><span>ABN</span><div><small>STATUS</small><b>Active</b></div></div>
+          </div>
         </section>
-        <section className="auth-form-wrap">
-          <form className="auth-form" onSubmit={(event) => void submitAuth(event)}>
-            <p className="eyebrow">{authMode === "register" ? "Create workspace" : "Welcome back"}</p>
-            <h2>{authMode === "register" ? "Register your company" : "Sign in to ABN Guard"}</h2>
-            <p>{authMode === "register" ? "Set up a private company workspace on this device." : "Access your company’s saved ABNs and contract checks."}</p>
-            {authMode === "register" && <label>Company name<input value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>}
-            <label>{authMode === "register" ? "Work email" : "Email or username"}<input type={authMode === "register" ? "email" : "text"} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === "register" ? "you@company.com" : "you@company.com or admin"} autoComplete="username" /></label>
-            <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder={authMode === "register" ? "At least 6 characters" : "Enter your password"} autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
-            {authError && <div className="auth-error">{authError}</div>}
-            <button className="primary-button" type="submit">{authMode === "register" ? "Create company account" : "Sign in"}<span>→</span></button>
-            <div className="auth-switch">{authMode === "register" ? "Already registered?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Create an account"}</button></div>
-          </form>
+
+        <section className="landing-proof"><p>One workspace for every supplier check</p><div><span>ABN LOOKUP</span><i /><span>GST STATUS</span><i /><span>BANK DETAILS</span><i /><span>CHANGE MONITORING</span></div></section>
+
+        <section className="landing-section" id="product">
+          <div className="landing-section-heading"><p className="landing-label">THE SAFER WAY TO PAY</p><h2>Catch the details that<br />cost businesses money.</h2><p>ABN Guard brings supplier verification into one calm, repeatable workflow—so your team can move fast without taking shortcuts.</p></div>
+          <div className="landing-feature-grid">
+            <article className="landing-feature large"><div className="feature-copy"><span className="feature-icon">⌕</span><h3>Read the documents.<br />Find the supplier.</h3><p>Upload contracts, invoices or engagement letters. ABN Guard extracts supplier identities and payment details in seconds.</p><a href="#how-it-works">Explore document checks <span>→</span></a></div><div className="feature-visual document-visual"><div className="doc-paper"><small>TAX INVOICE</small><h4>Northbank Electrical</h4><div className="doc-line long"/><div className="doc-line"/><div className="doc-highlight">ABN&nbsp;&nbsp; 53 004 085 616 <span>✓</span></div><div className="doc-line medium"/><div className="doc-highlight bank">BSB&nbsp;&nbsp; 062-000&nbsp;&nbsp;&nbsp; Account&nbsp;&nbsp; 1045 8792 <span>✓</span></div></div><div className="scan-line" /></div></article>
+            <article className="landing-feature dark"><div className="feature-copy"><span className="feature-icon">◎</span><h3>Compare against the source of truth.</h3><p>See the contract beside the official ABN Lookup record. Status, GST and entity details are clear at a glance.</p></div><div className="compare-mini"><div><small>DOCUMENT</small><b>Northbank Electrical</b><span>53 004 085 616</span></div><i>✓</i><div><small>ABN LOOKUP</small><b>NORTHBANK ELECTRICAL PTY LTD</b><span>Active · GST registered</span></div></div></article>
+            <article className="landing-feature mint"><div className="feature-copy"><span className="feature-icon">↻</span><h3>Know when something changes.</h3><p>Maintain one clean supplier register and review changes to ABN, GST, entity or bank details over time.</p></div><div className="alert-mini"><div><span>NB</span><p><b>Northbank Electrical</b><small>ABN 53 004 085 616</small></p><i>Verified</i></div><div><span>SF</span><p><b>Southside Fabrication</b><small>GST status changed</small></p><i className="warn">Review</i></div><div><span>MC</span><p><b>Metro Civil Group</b><small>Bank details updated</small></p><i className="warn">Review</i></div></div></article>
+          </div>
         </section>
+
+        <section className="landing-steps" id="how-it-works">
+          <div><p className="landing-label">HOW IT WORKS</p><h2>From document to decision<br />in three simple steps.</h2></div>
+          <ol><li><span>01</span><div><h3>Upload your documents</h3><p>Add multiple PDF, DOCX or TXT files at once. They are read directly inside your workspace.</p></div></li><li><span>02</span><div><h3>Review the comparison</h3><p>ABN Guard matches supplier claims against official registration records and your saved bank details.</p></div></li><li><span>03</span><div><h3>Save a verified record</h3><p>Resolve any flagged differences, then add the supplier to a register your team can trust.</p></div></li></ol>
+        </section>
+
+        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files remain in your browser.</p><div><span><b>01</b>Local document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
+
+        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Create your workspace <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
+
+        <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><a href="#security">Security</a><button type="button" onClick={() => openAuth("signin")}>Sign in</button></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
+
+        {showAuth && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuth(false); }}>
+          <section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+            <button className="auth-modal-close" type="button" aria-label="Close" onClick={() => setShowAuth(false)}>×</button>
+            <div className="auth-modal-brand"><span>A</span><strong>ABN Guard</strong></div>
+            <form className="auth-form" onSubmit={(event) => void submitAuth(event)}>
+              <p className="eyebrow">{authMode === "register" ? "Create workspace" : "Welcome back"}</p>
+              <h2 id="auth-title">{authMode === "register" ? "Register your company" : "Sign in to ABN Guard"}</h2>
+              <p>{authMode === "register" ? "Set up a private company workspace on this device." : "Access your company’s saved ABNs and contract checks."}</p>
+              {authMode === "register" && <label>Company name<input autoFocus value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>}
+              <label>{authMode === "register" ? "Work email" : "Email or username"}<input autoFocus={authMode === "signin"} type={authMode === "register" ? "email" : "text"} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === "register" ? "you@company.com" : "you@company.com or admin"} autoComplete="username" /></label>
+              <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder={authMode === "register" ? "At least 6 characters" : "Enter your password"} autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
+              {authError && <div className="auth-error">{authError}</div>}
+              <button className="primary-button" type="submit">{authMode === "register" ? "Create company account" : "Sign in"}<span>→</span></button>
+              <div className="auth-switch">{authMode === "register" ? "Already registered?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Create an account"}</button></div>
+            </form>
+          </section>
+        </div>}
       </main>
     );
   }
