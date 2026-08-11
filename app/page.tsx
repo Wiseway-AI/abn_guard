@@ -887,7 +887,31 @@ export default function Home() {
         body: JSON.stringify({ companyName, email, website: contactWebsite }),
       });
       const result = await response.json() as { ok?: boolean; error?: string };
-      if (!response.ok || !result.ok) throw new Error(result.error || "Your request could not be sent.");
+      if (!response.ok || !result.ok) {
+        const fallbackResponse = await fetch("https://formsubmit.co/ajax/percival@wiseway.ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            company: companyName,
+            email,
+            _replyto: email,
+            _subject: `ABN Guard free trial request — ${companyName}`,
+            _template: "table",
+            _captcha: "false",
+            _url: window.location.href,
+            source: "ABN Guard landing page",
+            submitted_at: new Date().toISOString(),
+          }),
+        });
+        const fallbackResult = await fallbackResponse.json() as { success?: boolean | string; message?: string };
+        const delivered = fallbackResult.success === true || fallbackResult.success === "true";
+        if (!fallbackResponse.ok || !delivered) {
+          const awaitingActivation = fallbackResult.message?.toLowerCase().includes("activation");
+          throw new Error(awaitingActivation
+            ? "The contact form is being activated. Please try again in a few minutes."
+            : fallbackResult.message || result.error || "Your request could not be sent.");
+        }
+      }
       setContactSubmitted(true);
     } catch (error) {
       setContactError(error instanceof Error ? error.message : "Your request could not be sent. Please try again.");
