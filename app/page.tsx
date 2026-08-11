@@ -508,6 +508,10 @@ export default function Home() {
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
   const [showAuth, setShowAuth] = useState(false);
+  const [contactWebsite, setContactWebsite] = useState("");
+  const [contactSubmitting, setContactSubmitting] = useState(false);
+  const [contactSubmitted, setContactSubmitted] = useState(false);
+  const [contactError, setContactError] = useState("");
   const [setupAbn, setSetupAbn] = useState("");
   const [setupRecord, setSetupRecord] = useState<AbnRecord | null>(null);
   const [setupError, setSetupError] = useState("");
@@ -860,6 +864,36 @@ export default function Home() {
     localStorage.setItem(STORAGE.session, account.id);
     setCurrentAccount(account);
     loadAccountData(account.id);
+  }
+
+  async function submitContact(event: FormEvent) {
+    event.preventDefault();
+    setContactError("");
+    const companyName = authCompany.trim();
+    const email = authEmail.trim().toLowerCase();
+    if (!companyName) {
+      setContactError("Enter your company name.");
+      return;
+    }
+    if (!/^\S+@\S+\.\S+$/.test(email)) {
+      setContactError("Enter a valid work email.");
+      return;
+    }
+    setContactSubmitting(true);
+    try {
+      const response = await fetch("/api/contact", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName, email, website: contactWebsite }),
+      });
+      const result = await response.json() as { ok?: boolean; error?: string };
+      if (!response.ok || !result.ok) throw new Error(result.error || "Your request could not be sent.");
+      setContactSubmitted(true);
+    } catch (error) {
+      setContactError(error instanceof Error ? error.message : "Your request could not be sent. Please try again.");
+    } finally {
+      setContactSubmitting(false);
+    }
   }
 
   function signOut() {
@@ -1373,6 +1407,9 @@ export default function Home() {
     const openAuth = (mode: "signin" | "register") => {
       setAuthMode(mode);
       setAuthError("");
+      setContactError("");
+      setContactSubmitted(false);
+      setContactWebsite("");
       setShowAuth(true);
     };
 
@@ -1381,7 +1418,7 @@ export default function Home() {
         <nav className="landing-nav" aria-label="Main navigation">
           <a className="landing-brand" href="#top" aria-label="ABN Guard home"><span>A</span><strong>ABN Guard</strong></a>
           <div className="landing-nav-links"><a href="#product">Product</a><a href="#how-it-works">How it works</a><a href="#security">Security</a></div>
-          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Get started <span>↗</span></button></div>
+          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Contact us <span>↗</span></button></div>
         </nav>
 
         <section className="landing-hero" id="top">
@@ -1389,7 +1426,7 @@ export default function Home() {
             <div className="landing-kicker"><span>✓</span> Built for Australian finance teams</div>
             <h1>Every supplier.<br /><em>Verified.</em></h1>
             <p>Turn contracts and invoices into verified supplier records. Check ABNs, GST status and bank details before money moves.</p>
-            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Start verifying <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
+            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Try the free trial <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
             <div className="landing-trust"><span><b>✓</b> No credit card</span><span><b>✓</b> Set up in minutes</span><span><b>✓</b> Australian data</span></div>
           </div>
 
@@ -1424,7 +1461,7 @@ export default function Home() {
 
         <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files remain in your browser.</p><div><span><b>01</b>Local document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
 
-        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Create your workspace <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
+        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Try the free trial <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
 
         <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><a href="#security">Security</a><button type="button" onClick={() => openAuth("signin")}>Sign in</button></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
 
@@ -1432,17 +1469,29 @@ export default function Home() {
           <section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
             <button className="auth-modal-close" type="button" aria-label="Close" onClick={() => setShowAuth(false)}>×</button>
             <div className="auth-modal-brand"><span>A</span><strong>ABN Guard</strong></div>
-            <form className="auth-form" onSubmit={(event) => void submitAuth(event)}>
-              <p className="eyebrow">{authMode === "register" ? "Create workspace" : "Welcome back"}</p>
-              <h2 id="auth-title">{authMode === "register" ? "Register your company" : "Sign in to ABN Guard"}</h2>
-              <p>{authMode === "register" ? "Set up a private company workspace on this device." : "Access your company’s saved ABNs and contract checks."}</p>
-              {authMode === "register" && <label>Company name<input autoFocus value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>}
-              <label>{authMode === "register" ? "Work email" : "Email or username"}<input autoFocus={authMode === "signin"} type={authMode === "register" ? "email" : "text"} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === "register" ? "you@company.com" : "you@company.com or admin"} autoComplete="username" /></label>
-              <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder={authMode === "register" ? "At least 6 characters" : "Enter your password"} autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
+            {authMode === "register" ? contactSubmitted ? <div className="contact-success" role="status">
+              <span>✓</span><p className="eyebrow">REQUEST RECEIVED</p><h2 id="auth-title">Thanks — we’ll be in touch.</h2><p>Your free trial request for <b>{authCompany.trim()}</b> has been sent. We’ll contact you at <b>{authEmail.trim()}</b>.</p><button className="primary-button" type="button" onClick={() => setShowAuth(false)}>Done <span>→</span></button>
+            </div> : <form className="auth-form contact-form" onSubmit={(event) => void submitContact(event)}>
+              <p className="eyebrow">CONTACT US</p>
+              <h2 id="auth-title">Try the free trial right now!</h2>
+              <p>Tell us where to reach you and we’ll help you get started with ABN Guard.</p>
+              <label>Company name<input autoFocus required maxLength={120} value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>
+              <label>Work email<input required maxLength={180} type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></label>
+              <label className="contact-honey" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={contactWebsite} onChange={(event) => setContactWebsite(event.target.value)} /></label>
+              {contactError && <div className="auth-error">{contactError}</div>}
+              <button className="primary-button" type="submit" disabled={contactSubmitting}>{contactSubmitting ? "Sending…" : "Contact us — start free trial"}<span>→</span></button>
+              <small className="contact-consent">By submitting, you agree that ABN Guard may contact you about the free trial.</small>
+              <div className="auth-switch">Already have an account?<button type="button" onClick={() => { setAuthMode("signin"); setAuthError(""); }}>Sign in</button></div>
+            </form> : <form className="auth-form" onSubmit={(event) => void submitAuth(event)}>
+              <p className="eyebrow">WELCOME BACK</p>
+              <h2 id="auth-title">Sign in to ABN Guard</h2>
+              <p>Access your company’s saved ABNs and contract checks.</p>
+              <label>Email or username<input autoFocus type="text" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com or username" autoComplete="username" /></label>
+              <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" /></label>
               {authError && <div className="auth-error">{authError}</div>}
-              <button className="primary-button" type="submit">{authMode === "register" ? "Create company account" : "Sign in"}<span>→</span></button>
-              <div className="auth-switch">{authMode === "register" ? "Already registered?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Create an account"}</button></div>
-            </form>
+              <button className="primary-button" type="submit">Sign in<span>→</span></button>
+              <div className="auth-switch">Want to try ABN Guard?<button type="button" onClick={() => { setAuthMode("register"); setContactError(""); setContactSubmitted(false); }}>Contact us</button></div>
+            </form>}
           </section>
         </div>}
       </main>
