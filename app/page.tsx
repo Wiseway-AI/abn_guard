@@ -1575,7 +1575,7 @@ export default function Home() {
     if (fileRef.current) fileRef.current.value = "";
     const doubleChecks = completed.filter((item) => item.status === "double-check").length;
     const quotaSkipped = eligibleVerifiedRecords.length - verifiedRecords.length;
-    setNotice(quotaSkipped ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}` : `Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Today for double check` : ""}.`);
+    setNotice(quotaSkipped ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}` : `Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Review for double check` : ""}.`);
   }
 
   function verifyTodayReview(reviewId: string) {
@@ -1786,7 +1786,7 @@ export default function Home() {
             <div className="shot-window">
               <div className="shot-top"><div className="shot-logo"><span>A</span><b>ABN Guard</b></div><div className="shot-date">12 AUG 2026</div><div className="shot-user">PP</div></div>
               <div className="shot-layout">
-                <aside className="shot-side"><div className="shot-nav active"><span>⌕</span>Check</div><div className="shot-nav"><span>✓</span>Today <b>3</b></div><div className="shot-nav"><span>▤</span>Records</div><div className="shot-nav"><span>!</span>Alerts</div><small>WORKSPACE</small><div className="shot-company"><span>AC</span><p><b>Acme Co.</b><em>Finance team</em></p></div></aside>
+                <aside className="shot-side"><div className="shot-nav active"><span>⌕</span>Check</div><div className="shot-nav"><span>✓</span>Review <b>3</b></div><div className="shot-nav"><span>▤</span>Records</div><div className="shot-nav"><span>!</span>Alerts</div><small>WORKSPACE</small><div className="shot-company"><span>AC</span><p><b>Acme Co.</b><em>Finance team</em></p></div></aside>
                 <div className="shot-main"><div className="shot-heading"><div><span>SUPPLIER VERIFICATION</span><h2>Check a supplier</h2></div><i>ABR connected</i></div><div className="shot-stats"><div><small>CHECKS TODAY</small><b>24</b><em>↑ 18%</em></div><div><small>VERIFIED</small><b>21</b><em>87.5%</em></div><div className="attention"><small>NEEDS REVIEW</small><b>3</b><em>Action needed</em></div></div><div className="shot-verify"><section><span className="shot-step">1</span><h3>Add contract</h3><div className="shot-drop"><span>↥</span><b>Drop documents here</b><small>PDF, DOCX or TXT</small></div><button>Verify supplier <span>→</span></button></section><section><div className="shot-result-title"><div><span className="shot-step">2</span><h3>Verification result</h3></div><i>PASS</i></div><div className="shot-entity"><span>AC</span><div><small>REGISTERED ENTITY</small><b>ACME SUPPLIES PTY LTD</b><em>ABN 53 004 085 616</em></div><i>✓</i></div><div className="shot-check-row"><span>ABN status</span><b>● Active</b></div><div className="shot-check-row"><span>GST registration</span><b>✓ Registered</b></div><div className="shot-check-row"><span>Bank details</span><b>✓ Match</b></div></section></div></div>
               </div>
             </div>
@@ -1873,7 +1873,7 @@ export default function Home() {
 
   const nav = [
     { id: "verify" as const, icon: "C", label: "Check", hint: "Extract & compare" },
-    { id: "today" as const, icon: "T", label: "Today", hint: `${doubleCheckItems.length} to review` },
+    { id: "today" as const, icon: "R", label: "Review", hint: `${doubleCheckItems.length} to review` },
     { id: "register" as const, icon: "R", label: "Records", hint: `${register.length} records` },
     { id: "changes" as const, icon: "A", label: "Alerts", hint: `${changes.length} changes` },
   ];
@@ -1891,7 +1891,7 @@ export default function Home() {
       </aside>
 
       <section className="workspace">
-        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "today" ? "Daily review workspace" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "today" ? "Today" : tab === "register" ? "Records" : tab === "changes" ? "Alerts" : "Connection & update settings"}</h1></div><div className="top-actions">{currentAccount.authProvider === "google" && <span className="plan-pill">{currentAccount.planName || "Free"} · {register.length}/{currentAccount.abnLimit ?? 30}</span>}<span className={apiConfigured ? "mode-pill live" : "mode-pill"}><i />{apiConfigured ? "Official data" : "Demo data"}</span><button className="ghost-button" onClick={() => navigateTo("settings")}>Settings</button></div></header>
+        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "today" ? "Review workspace" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "today" ? "Review" : tab === "register" ? "Records" : tab === "changes" ? "Alerts" : "Connection & update settings"}</h1></div></header>
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
@@ -1908,7 +1908,7 @@ export default function Home() {
             </article>
 
             <article className="panel results-panel">
-              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Today" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
+              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Review" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
               {!latestChecks.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{latestChecks.slice(activeCheckIndex, activeCheckIndex + 1).map((check) => {
                 const safeContractName = check.contractName && check.contractName.length <= 120 ? check.contractName : "Not found in file";
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
