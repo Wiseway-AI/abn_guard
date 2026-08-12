@@ -523,6 +523,9 @@ td small { font-size: 11px; }
 .setup-progress i { width: 55px; height: 1px; background: #b9c7c0; }
 .setup-card h1 { font: 500 32px Georgia, serif; margin: 8px 0 10px; }
 .setup-card > p:not(.eyebrow) { color: var(--muted); font-size: 13px; line-height: 1.65; max-width: 520px; }
+.setup-card > .setup-abn-help { margin-top: 8px; }
+.setup-abn-help a { color: #2454e6; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.setup-abn-help a:hover { color: #153db3; }
 .setup-label { display: block; font-size: 12px; font-weight: 700; margin-top: 25px; }
 .setup-label > div { display: flex; gap: 8px; margin-top: 8px; }
 .setup-label input { flex: 1; height: 43px; border: 1px solid var(--line); border-radius: 8px; padding: 0 12px; font-size: 14px; }

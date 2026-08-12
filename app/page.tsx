@@ -1928,6 +1928,7 @@ export default function Home() {
           <p className="eyebrow">Company setup · Step 2 of 2</p>
           <h1>Connect your company ABN</h1>
           <p>We’ll search ABN Lookup, confirm your registered details and save the company ABN to your workspace.</p>
+          <p className="setup-abn-help">Can not find your ABN? <a href="https://abr.business.gov.au/" target="_blank" rel="noreferrer">Look up here</a></p>
           <label className="setup-label">Australian Business Number<div><input value={setupAbn} onChange={(event) => setSetupAbn(event.target.value)} placeholder="e.g. 53 004 085 616" onKeyDown={(event) => event.key === "Enter" && void searchSetupAbn()} /><button className="primary-small" onClick={() => void searchSetupAbn()} disabled={busy}>{busy ? "Searching…" : "Search ABN"}</button></div></label>
           {setupError && <div className="auth-error">{setupError}</div>}
           {setupRecord && (

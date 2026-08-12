@@ -76,6 +76,8 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(page, /Create account with email/);
   assert.match(page, /Up to 30 ABN \/ bank-detail records/);
   assert.match(page, /Up to 500 ABN \/ bank-detail records/);
+  assert.match(page, /Can not find your ABN\?/);
+  assert.match(page, /https:\/\/abr\.business\.gov\.au\//);
   assert.match(credential, /upsertGoogleUser/);
   assert.match(credential, /createSessionCookie/);
   assert.match(verifier, /RSASSA-PKCS1-v1_5/);
