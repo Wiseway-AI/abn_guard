@@ -808,6 +808,12 @@ export default function Home() {
   }, [cloudWorkspaceReady, currentAccount?.authProvider]);
 
   useEffect(() => {
+    const resetStripeNavigation = () => setBillingBusy(false);
+    window.addEventListener("pageshow", resetStripeNavigation);
+    return () => window.removeEventListener("pageshow", resetStripeNavigation);
+  }, []);
+
+  useEffect(() => {
     let refreshTimer = 0;
     const startReviewDay = () => {
       const activeDay = todayReviewDayKey();
@@ -1031,8 +1037,10 @@ export default function Home() {
       return;
     }
     setBillingBusy(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
     try {
-      const response = await fetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }) });
+      const response = await fetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }), signal: controller.signal });
       const result = await response.json() as { url?: string; error?: string };
       if (response.status === 401) {
         setShowAuth(true);
@@ -1040,9 +1048,11 @@ export default function Home() {
         setAuthError("Your local session has expired. Sign in with Google again, then choose Starter.");
       }
       if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
+      window.clearTimeout(timeout);
       window.location.href = result.url;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Checkout could not be started.";
+      window.clearTimeout(timeout);
+      const message = error instanceof DOMException && error.name === "AbortError" ? "Stripe is taking longer than expected. Please try again." : error instanceof Error ? error.message : "Checkout could not be started.";
       setNotice(message);
       setBillingBusy(false);
     }

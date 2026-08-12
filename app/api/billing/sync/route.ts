@@ -30,7 +30,7 @@ export async function POST(request: Request) {
     const checkout = await stripeGet(`checkout/sessions/${encodeURIComponent(checkoutSessionId)}`, new URLSearchParams({ "expand[]": "subscription" }));
     const workspaceId = stringAt(checkout, "metadata", "workspace_id");
     const customerId = typeof checkout.customer === "string" ? checkout.customer : stringAt(checkout, "customer", "id");
-    if (workspaceId !== session.workspace.id || !session.user.stripe_customer_id || customerId !== session.user.stripe_customer_id) {
+    if (workspaceId !== session.workspace.id || !customerId || (session.user.stripe_customer_id && customerId !== session.user.stripe_customer_id)) {
       return Response.json({ error: "This Stripe Checkout session does not belong to your workspace." }, { status: 403 });
     }
     if (checkout.status !== "complete") return Response.json({ error: "Stripe Checkout has not completed yet." }, { status: 409 });
@@ -47,6 +47,10 @@ export async function POST(request: Request) {
     if (!subscriptionId || plan === "free") return Response.json({ error: "Stripe did not return an active Starter subscription." }, { status: 409 });
 
     const db = await database();
+    if (!session.user.stripe_customer_id) {
+      await db.prepare("UPDATE users SET stripe_customer_id = ?, updated_at = ? WHERE id = ? AND stripe_customer_id IS NULL")
+        .bind(customerId, new Date().toISOString(), session.user.id).run();
+    }
     await db.prepare("UPDATE workspaces SET plan = ?, subscription_status = ?, stripe_subscription_id = ?, stripe_price_id = ?, current_period_end = ?, updated_at = ? WHERE id = ?")
       .bind(plan, status, subscriptionId, priceId, periodEnd, new Date().toISOString(), session.workspace.id).run();
     const updatedWorkspace = { ...session.workspace, plan, subscription_status: status, stripe_subscription_id: subscriptionId, stripe_price_id: priceId, current_period_end: periodEnd };

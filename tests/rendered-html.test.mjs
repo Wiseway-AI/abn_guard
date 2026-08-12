@@ -79,3 +79,17 @@ test("presents Google as the account-bound join and sign-in method", async () =>
   assert.match(database, /WHERE owner_user_id = \?/);
   assert.match(database, /INSERT INTO workspaces/);
 });
+
+test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
+  const [page, checkoutRoute, syncRoute] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/billing/checkout/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/billing/sync/route.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.doesNotMatch(checkoutRoute, /stripeRequest\("customers"/);
+  assert.match(checkoutRoute, /checkoutParams\.set\("customer_email"/);
+  assert.match(syncRoute, /UPDATE users SET stripe_customer_id/);
+  assert.match(page, /addEventListener\("pageshow", resetStripeNavigation\)/);
+  assert.match(page, /controller\.abort\(\)/);
+});
