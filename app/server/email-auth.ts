@@ -1,4 +1,5 @@
 const encoder = new TextEncoder();
+const PASSWORD_ITERATIONS = 100_000;
 
 function bytesToBase64(bytes: Uint8Array) {
   let binary = "";
@@ -14,7 +15,7 @@ function randomBytes(length: number) {
 
 async function derivePassword(password: string, salt: Uint8Array) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
-  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 210_000 }, key, 256));
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: PASSWORD_ITERATIONS }, key, 256));
 }
 
 function safeEqual(left: string, right: string) {
@@ -27,12 +28,12 @@ function safeEqual(left: string, right: string) {
 export async function hashPassword(password: string) {
   const salt = randomBytes(16);
   const digest = await derivePassword(password, salt);
-  return `pbkdf2_sha256$210000$${bytesToBase64(salt)}$${bytesToBase64(digest)}`;
+  return `pbkdf2_sha256$${PASSWORD_ITERATIONS}$${bytesToBase64(salt)}$${bytesToBase64(digest)}`;
 }
 
 export async function verifyPassword(password: string, stored: string) {
   const [algorithm, iterations, saltValue, digestValue] = stored.split("$");
-  if (algorithm !== "pbkdf2_sha256" || iterations !== "210000" || !saltValue || !digestValue) return false;
+  if (algorithm !== "pbkdf2_sha256" || iterations !== String(PASSWORD_ITERATIONS) || !saltValue || !digestValue) return false;
   const padded = saltValue.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((saltValue.length + 3) % 4);
   const salt = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
   return safeEqual(bytesToBase64(await derivePassword(password, salt)), digestValue);
