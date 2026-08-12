@@ -87,6 +87,11 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(database, /INSERT INTO workspaces/);
   assert.match(styles, /\.google-auth-button-host\.busy\s*>\s*div\s*\{\s*display:\s*none\s*!important/);
   assert.match(styles, /\.google-auth-button-host\.busy\s*>\s*span[\s\S]*text-overflow:\s*ellipsis/);
+  assert.match(styles, /\/\* Mobile experience \*\/[\s\S]*max-height:\s*min\(92dvh,\s*820px\)/);
+  assert.match(styles, /\.toolbar-actions\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
+  assert.match(page, /mobile-only-nav/);
+  assert.match(page, />Settings<\/b>/);
+  assert.match(page, />Sign out<\/b>/);
 });
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
