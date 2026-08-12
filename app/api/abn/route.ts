@@ -78,7 +78,10 @@ function currentRange<T extends { to: string }>(items: T[]) {
 }
 
 export async function GET() {
-  return Response.json({ configured: Boolean(clean(process.env.ABN_LOOKUP_GUID)) });
+  return Response.json(
+    { configured: Boolean(clean(process.env.ABN_LOOKUP_GUID)) },
+    { headers: { "Cache-Control": "no-store, max-age=0" } },
+  );
 }
 
 export async function POST(request: Request) {
