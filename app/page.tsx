@@ -699,6 +699,7 @@ export default function Home() {
         text: authMode === "register" ? "signup_with" : "signin_with",
         shape: "rectangular",
         logo_alignment: "left",
+        locale: "en",
         width: Math.min(400, Math.max(240, googleButtonRef.current.clientWidth)),
       });
     };
@@ -709,7 +710,7 @@ export default function Home() {
     else {
       const script = document.createElement("script");
       script.id = scriptId;
-      script.src = "https://accounts.google.com/gsi/client";
+      script.src = "https://accounts.google.com/gsi/client?hl=en";
       script.async = true;
       script.defer = true;
       script.addEventListener("load", renderGoogleButton, { once: true });

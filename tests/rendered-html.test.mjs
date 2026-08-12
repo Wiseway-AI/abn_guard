@@ -70,6 +70,8 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(page, /Join now/);
   assert.match(page, /Join with Google/);
   assert.match(page, /Sign in with Google/);
+  assert.match(page, /locale: "en"/);
+  assert.match(page, /gsi\/client\?hl=en/);
   assert.match(page, /Google or email sign-in/);
   assert.match(page, /Create account with email/);
   assert.match(page, /Up to 30 ABN \/ bank-detail records/);
