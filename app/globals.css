@@ -973,7 +973,6 @@ td small { font-size: 12px; }
 .doc-highlight { min-height: 41px; margin: 23px -11px 0; padding: 0 11px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #aed5c3; border-radius: 6px; background: #e9f6ef; color: #2b5343; font: 700 10px monospace; }
 .doc-highlight.bank { margin-top: 20px; border-color: #e0c997; background: #fff8e8; }
 .doc-highlight span { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: #4b9a78; color: white; }
-.scan-line { width: 83%; height: 1px; position: absolute; left: 9%; top: 58%; background: #4eb181; box-shadow: 0 0 16px 3px rgba(78,177,129,.3); }
 .compare-mini { margin: 58px 0 0; display: grid; grid-template-columns: 1fr 42px 1fr; align-items: stretch; gap: 8px; }
 .compare-mini > div { min-height: 152px; padding: 21px; border: 1px solid #3c6152; border-radius: 9px; background: #1d4638; }
 .compare-mini small, .compare-mini b, .compare-mini span { display: block; }
