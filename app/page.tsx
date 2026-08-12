@@ -584,6 +584,7 @@ export default function Home() {
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleSigningIn, setGoogleSigningIn] = useState(false);
   const [billingBusy, setBillingBusy] = useState(false);
+  const [billingError, setBillingError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const googleButtonRef = useRef<HTMLDivElement>(null);
@@ -772,6 +773,39 @@ export default function Home() {
     if (pendingPlan !== "starter") return;
     localStorage.removeItem("abn-guard-pending-plan");
     void startCheckout(pendingPlan);
+  }, [cloudWorkspaceReady, currentAccount?.authProvider]);
+
+  useEffect(() => {
+    if (!cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    const params = new URLSearchParams(window.location.search);
+    const billingResult = params.get("billing");
+    const checkoutSessionId = params.get("session_id");
+    if (billingResult !== "success" && billingResult !== "cancelled") return;
+    params.delete("billing");
+    params.delete("session_id");
+    const nextQuery = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`);
+    if (billingResult === "cancelled") {
+      setNotice("Stripe Checkout was cancelled. Your current plan has not changed.");
+      return;
+    }
+    if (!checkoutSessionId) {
+      setNotice("Stripe returned without a Checkout session. Your subscription will update when the webhook arrives.");
+      return;
+    }
+    setBillingBusy(true);
+    void fetch("/api/billing/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ checkoutSessionId }),
+    }).then(async (response) => {
+      const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
+      if (!response.ok || !result.workspace) throw new Error(result.error || "Stripe subscription could not be confirmed.");
+      setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
+      setNotice(`Starter is active. This workspace can now save up to ${result.workspace.abnLimit} ABN / bank-detail records.`);
+    }).catch((error) => {
+      setNotice(error instanceof Error ? error.message : "Stripe subscription could not be confirmed.");
+    }).finally(() => setBillingBusy(false));
   }, [cloudWorkspaceReady, currentAccount?.authProvider]);
 
   useEffect(() => {
@@ -997,14 +1031,22 @@ export default function Home() {
       setAuthError("Sign in with Google to choose a paid plan.");
       return;
     }
+    setBillingError("");
     setBillingBusy(true);
     try {
       const response = await fetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }) });
       const result = await response.json() as { url?: string; error?: string };
+      if (response.status === 401) {
+        setShowAuth(true);
+        setAuthMode("signin");
+        setAuthError("Your local session has expired. Sign in with Google again, then choose Starter.");
+      }
       if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
       window.location.href = result.url;
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : "Checkout could not be started.");
+      const message = error instanceof Error ? error.message : "Checkout could not be started.";
+      setBillingError(message);
+      setNotice(message);
       setBillingBusy(false);
     }
   }
@@ -1995,7 +2037,7 @@ export default function Home() {
         {tab === "changes" && <div className="page-content changes-layout"><section className="change-summary panel"><p className="eyebrow">Monitoring status</p><h2>Stay on top of critical changes</h2><p>Changes to ABN status, GST registration, entity name or main location are recorded only when a weekly check is due or you run a check now.</p><div className="schedule-card"><span>↻</span><div><b>{schedule === "weekly" ? "Weekly automatic check" : "Manual checks"}</b><small>{schedule === "weekly" ? "Runs when the workspace is open and the weekly check is due" : "Runs only when you click the button below"}</small></div></div><button className="primary-button" onClick={() => void refreshAll("manual")} disabled={busy}>{busy ? "Updating…" : "Check all ABNs now"}<span>→</span></button></section><section className="timeline panel"><div className="panel-heading"><div><span className="step">3</span><h2>Change timeline</h2></div><small>{changes.length} items</small></div>{!changes.length ? <div className="empty-state compact"><span>◌</span><h3>No changes found yet</h3><p>Changes found by weekly or manual checks will appear here.</p></div> : changes.map((item) => <div className="timeline-item" key={item.id}><span className={`severity ${item.severity}`} /><div><div><b>{item.entityName}</b><small>{formatAbn(item.abn)}</small></div><p>{item.description}</p><time>{dateTime(item.changedAt)}</time></div></div>)}</section></div>}
 
         {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>Choose a weekly check while the workspace is open, or run monitoring only when requested.</p><div className="radio-group">{([{ id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }] as const).map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
-        {tab === "settings" && currentAccount.authProvider === "google" && <div className="page-content billing-settings-wrap"><article className="panel settings-card billing-settings-card"><div className="setting-icon">$</div><h2>Plan & billing</h2><p>Your plan controls the maximum number of ABN and bank-detail records saved in this workspace.</p><div className="current-plan-row"><div><small>Current plan</small><b>{currentAccount.planName || "Free"}</b><span>{register.length} of {currentAccount.abnLimit ?? 30} records used</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i></div><div className="settings-plan-actions">{currentAccount.plan !== "starter" && <button type="button" disabled={billingBusy} onClick={() => void startCheckout("starter")}><b>Starter · A$9.90/mo</b><span>Up to 500 ABN / bank-detail records</span></button>}{currentAccount.plan !== "free" && <button className="manage-billing" type="button" disabled={billingBusy} onClick={() => void openBillingPortal()}>Manage billing in Stripe ↗</button>}</div></article></div>}
+        {tab === "settings" && currentAccount.authProvider === "google" && <div className="page-content billing-settings-wrap"><article className="panel settings-card billing-settings-card"><div className="setting-icon">$</div><h2>Plan & billing</h2><p>Your plan controls the maximum number of ABN and bank-detail records saved in this workspace.</p><div className="current-plan-row"><div><small>Current plan</small><b>{currentAccount.planName || "Free"}</b><span>{register.length} of {currentAccount.abnLimit ?? 30} records used</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i></div><div className="settings-plan-actions">{currentAccount.plan !== "starter" && <button type="button" disabled={billingBusy} onClick={() => void startCheckout("starter")}><b>{billingBusy ? "Opening Stripe Checkout…" : "Starter · A$9.90/mo"}</b><span>Up to 500 ABN / bank-detail records</span></button>}{currentAccount.plan !== "free" && <button className="manage-billing" type="button" disabled={billingBusy} onClick={() => void openBillingPortal()}>Manage billing in Stripe ↗</button>}</div>{billingError && <div className="billing-inline-error" role="alert"><b>Stripe Checkout could not open</b><span>{billingError}</span></div>}</article></div>}
       </section>
       {editingBankRecord && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBankEditor(); }}>
         <section className="bank-editor" role="dialog" aria-modal="true" aria-labelledby="bank-editor-title">

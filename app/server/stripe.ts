@@ -14,6 +14,21 @@ export async function stripeRequest(path: string, body: URLSearchParams) {
   return result;
 }
 
+export async function stripeGet(path: string, query = new URLSearchParams()) {
+  const secret = process.env.STRIPE_SECRET_KEY?.trim();
+  if (!secret) throw new Error("Stripe is not configured.");
+  const suffix = query.size ? `?${query.toString()}` : "";
+  const response = await fetch(`https://api.stripe.com/v1/${path}${suffix}`, {
+    headers: { Authorization: `Bearer ${secret}` },
+  });
+  const result = await response.json() as Record<string, unknown>;
+  if (!response.ok) {
+    const error = result.error as { message?: string } | undefined;
+    throw new Error(error?.message || "Stripe request failed.");
+  }
+  return result;
+}
+
 export async function verifyStripeWebhook(payload: string, header: string) {
   const secret = process.env.STRIPE_WEBHOOK_SECRET?.trim();
   if (!secret) return false;

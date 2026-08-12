@@ -1059,6 +1059,10 @@ td small { font-size: 12px; }
 .auth-modal-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 37px; }
 .auth-modal-brand span { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: #1d5a43; color: white; font: 700 18px Georgia, serif; }
 .auth-modal-brand strong { font: 600 15px Georgia, serif; }
+.auth-plan-summary { margin: -12px 0 4px; padding: 14px 16px; display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 3px 12px; border: 1px solid #cfe1d8; border-radius: 10px; background: #edf6f1; }
+.auth-plan-summary span { color: #1f684b; font-size: 10px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.auth-plan-summary b { color: #21372e; font-size: 12px; text-align: right; }
+.auth-plan-summary small { grid-column: 1 / -1; color: #6e7f77; font-size: 10px; }
 .google-auth-button { width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; gap: 12px; border: 1px solid #cfd6d1; border-radius: 9px; background: white; color: #24362f; cursor: pointer; font-size: 13px; font-weight: 800; box-shadow: 0 3px 9px rgba(26,55,43,.04); }
 .google-auth-button:hover { border-color: #8da99c; box-shadow: 0 6px 16px rgba(26,55,43,.08); }
 .google-auth-button:disabled { cursor: not-allowed; opacity: .6; }
@@ -1101,9 +1105,13 @@ td small { font-size: 12px; }
 .current-plan-row > i { background: #dfe8e3; }
 .settings-plan-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .settings-plan-actions button { min-width: 210px; padding: 13px 15px; display: grid; gap: 4px; border: 1px solid #cbdad2; border-radius: 9px; background: white; color: #285d48; cursor: pointer; text-align: left; }
+.settings-plan-actions button:disabled { cursor: wait; opacity: .65; }
 .settings-plan-actions button b { font-size: 12px; }
 .settings-plan-actions button span { color: #77847d; font-size: 10px; }
 .settings-plan-actions button.manage-billing { display: block; min-width: 0; border: 0; background: transparent; font-weight: 800; }
+.billing-inline-error { margin-top: 13px; padding: 12px 14px; display: grid; gap: 4px; border: 1px solid #e8b8ad; border-radius: 9px; background: #fff3f0; color: #923e31; }
+.billing-inline-error b { font-size: 12px; }
+.billing-inline-error span { font-size: 11px; line-height: 1.45; }
 @keyframes auth-fade { from { opacity: 0; } }
 @keyframes auth-rise { from { opacity: 0; transform: translateY(12px) scale(.98); } }
 

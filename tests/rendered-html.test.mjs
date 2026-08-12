@@ -70,6 +70,8 @@ test("presents Google as the account-bound join and sign-in method", async () =>
   assert.match(page, /Join now/);
   assert.match(page, /Join with Google/);
   assert.match(page, /Sign in with Google/);
+  assert.match(page, /Up to 30 ABN \/ bank-detail records/);
+  assert.match(page, /Up to 500 ABN \/ bank-detail records/);
   assert.match(credential, /upsertGoogleUser/);
   assert.match(credential, /createSessionCookie/);
   assert.match(verifier, /RSASSA-PKCS1-v1_5/);

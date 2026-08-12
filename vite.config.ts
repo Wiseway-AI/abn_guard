@@ -3,25 +3,34 @@ import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
 
-const { r2 } = hostingConfig;
+const { d1, r2 } = hostingConfig;
+const LOCAL_D1_DATABASE_ID = "e3ebdcf9-db82-49ca-88f8-45ccc5217622";
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
-const localBindingConfig = {
-  main: "./worker/index.ts",
-  d1_databases: [],
-  r2_buckets: r2
-    ? [
-        {
-          binding: r2,
-          bucket_name: "site-creator-r2",
-        },
-      ]
-    : [],
-};
-
 export default defineConfig(async () => {
+  const localBindingConfig = {
+    main: "./worker/index.ts",
+    d1_databases: d1
+      ? [
+          {
+            binding: d1,
+            database_name: "abn-guard-v2-db",
+            database_id: LOCAL_D1_DATABASE_ID,
+          },
+        ]
+      : [],
+    r2_buckets: r2
+      ? [
+          {
+            binding: r2,
+            bucket_name: "site-creator-r2",
+          },
+        ]
+      : [],
+  };
+
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= "false";

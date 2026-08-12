@@ -13,6 +13,15 @@ function nestedString(value: unknown, ...path: string[]) {
   return typeof current === "string" ? current : "";
 }
 
+function nestedNumber(value: unknown, ...path: string[]) {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object") return null;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "number" ? current : null;
+}
+
 export async function POST(request: Request) {
   const payload = await request.text();
   if (!(await verifyStripeWebhook(payload, request.headers.get("Stripe-Signature") ?? ""))) return Response.json({ error: "Invalid Stripe signature." }, { status: 400 });
@@ -34,7 +43,10 @@ export async function POST(request: Request) {
       const priceId = nestedString(object, "items", "data", "0", "price", "id");
       const active = status === "active" || status === "trialing";
       const plan = active ? planForPriceId(priceId) : "free";
-      const periodEnd = typeof object.current_period_end === "number" ? object.current_period_end : null;
+      const itemPeriodEnd = nestedNumber(object, "items", "data", "0", "current_period_end");
+      const periodEnd = itemPeriodEnd && itemPeriodEnd > 0
+        ? itemPeriodEnd
+        : typeof object.current_period_end === "number" ? object.current_period_end : null;
       const query = workspaceId ? "UPDATE workspaces SET plan = ?, subscription_status = ?, stripe_subscription_id = ?, stripe_price_id = ?, current_period_end = ?, updated_at = ? WHERE id = ?" : "UPDATE workspaces SET plan = ?, subscription_status = ?, stripe_subscription_id = ?, stripe_price_id = ?, current_period_end = ?, updated_at = ? WHERE stripe_subscription_id = ?";
       const db = await database();
       await db.prepare(query).bind(plan, status, subscriptionId || null, priceId || null, periodEnd, new Date().toISOString(), workspaceId || subscriptionId).run();

@@ -4,10 +4,10 @@ V2 runs separately from the current production version on the `codex/google-stri
 
 ## Plans
 
-| Plan | Monthly price | Saved ABN limit |
+| Plan | Monthly price | Record limit |
 | --- | ---: | ---: |
-| Free | A$0 | 10 |
-| Starter | A$9.90 | 200 |
+| Free trial | A$0 | 30 ABN / bank-detail records |
+| Starter | A$9.90 | 500 ABN / bank-detail records |
 
 The server enforces these limits when the workspace is saved, including records created by contract checks and Excel imports.
 

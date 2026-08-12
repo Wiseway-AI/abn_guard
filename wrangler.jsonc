@@ -25,6 +25,7 @@
   "vars": {
     "APP_URL": "https://abn-guard-v2.percival-0ae.workers.dev",
     "GOOGLE_CLIENT_ID": "935832651296-31gf3fi5242sq2g6smh1kldfdo1c0eoo.apps.googleusercontent.com",
+    "STRIPE_STARTER_PRICE_ID": "price_1U3QQYBxIBEy9Vo6cgFVyWms",
     "CONTACT_TO_EMAIL": "percival@wiseway.ai"
   }
 }
