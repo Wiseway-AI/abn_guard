@@ -24,6 +24,8 @@ type Tab = "verify" | "today" | "register" | "changes" | "settings";
 type Source = "official" | "demo" | "pending";
 type RegisterFilter = "all" | "attention" | "active" | "cancelled" | "gst-registered" | "gst-not-registered";
 type BillingPlan = "free" | "starter";
+type MonitoringSchedule = "weekly" | "manual";
+type MonitoringTrigger = "scheduled" | "manual";
 
 type OfficialHistoryRange = {
   value: string;
@@ -161,6 +163,7 @@ type ChangeLog = {
   changedAt: string;
   description: string;
   severity: "high" | "medium" | "low";
+  trigger?: MonitoringTrigger;
 };
 
 type AbnHistoryEntry = {
@@ -381,7 +384,7 @@ function claimsFromContext(context: string, expectedName = "") {
   };
 }
 
-function compareRecord(previous: AbnRecord, current: AbnRecord): ChangeLog[] {
+function compareRecord(previous: AbnRecord, current: AbnRecord, trigger: MonitoringTrigger): ChangeLog[] {
   const changes: ChangeLog[] = [];
   const add = (description: string, severity: ChangeLog["severity"]) =>
     changes.push({
@@ -391,6 +394,7 @@ function compareRecord(previous: AbnRecord, current: AbnRecord): ChangeLog[] {
       changedAt: new Date().toISOString(),
       description,
       severity,
+      trigger,
     });
   if (previous.status !== current.status) add(`ABN status changed from ${previous.status} to ${current.status}`, "high");
   if (previous.gstRegistered !== current.gstRegistered)
@@ -561,7 +565,7 @@ export default function Home() {
   const [expandedAbns, setExpandedAbns] = useState<string[]>([]);
   const [loadingHistoryAbns, setLoadingHistoryAbns] = useState<string[]>([]);
   const [apiConfigured, setApiConfigured] = useState(false);
-  const [schedule, setSchedule] = useState("daily");
+  const [schedule, setSchedule] = useState<MonitoringSchedule>("weekly");
   const [lastRefresh, setLastRefresh] = useState("");
   const [query, setQuery] = useState("");
   const [registerFilter, setRegisterFilter] = useState<RegisterFilter>("all");
@@ -624,10 +628,10 @@ export default function Home() {
           };
           setCurrentAccount(account);
           setRegister(workspaceResult.state?.register ?? []);
-          setChanges(workspaceResult.state?.changes ?? []);
+          setChanges((workspaceResult.state?.changes ?? []).filter((change) => Boolean(change.trigger)));
           setHistory(workspaceResult.state?.history ?? []);
           setTodayReviews(workspaceResult.state?.today ?? []);
-          setSchedule(workspaceResult.state?.schedule ?? "daily");
+          setSchedule(workspaceResult.state?.schedule === "manual" ? "manual" : "weekly");
           setLastRefresh(workspaceResult.state?.lastRefresh ?? "");
           setDocuments([]);
           setChecks([]);
@@ -784,10 +788,10 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated || !currentAccount?.setupComplete || schedule === "manual" || !register.length) return;
-    const interval = schedule === "weekly" ? 7 * 24 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+    const interval = 7 * 24 * 60 * 60 * 1000;
     const runIfDue = () => {
       const last = lastRefresh ? new Date(lastRefresh).getTime() : 0;
-      if (!busy && Date.now() - last >= interval) void refreshAll(false);
+      if (!busy && Date.now() - last >= interval) void refreshAll("scheduled");
     };
     const firstRun = window.setTimeout(runIfDue, 1800);
     const timer = window.setInterval(runIfDue, 60 * 60 * 1000);
@@ -802,11 +806,11 @@ export default function Home() {
     localStorage.removeItem(accountStorageKey(accountId, "checks"));
     setChecks([]);
     setTodayReviews(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "today")) ?? "[]"));
-    setChanges(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "changes")) ?? "[]"));
+    setChanges((JSON.parse(localStorage.getItem(accountStorageKey(accountId, "changes")) ?? "[]") as ChangeLog[]).filter((change) => Boolean(change.trigger)));
     setHistory(JSON.parse(localStorage.getItem(accountStorageKey(accountId, "history")) ?? "[]"));
     setExpandedAbns([]);
     setLoadingHistoryAbns([]);
-    setSchedule(localStorage.getItem(accountStorageKey(accountId, "schedule")) ?? "daily");
+    setSchedule(localStorage.getItem(accountStorageKey(accountId, "schedule")) === "manual" ? "manual" : "weekly");
     setLastRefresh(localStorage.getItem(accountStorageKey(accountId, "lastRefresh")) ?? "");
     setDocuments([]);
   }
@@ -957,9 +961,7 @@ export default function Home() {
     setLoadingHistoryAbns((items) => [...items, abn]);
     try {
       const current = { ...(await lookupAbn(abn)), bankDetails: previous.bankDetails };
-      const logs = compareRecord(previous, current);
       setRegister((records) => records.map((record) => record.abn === abn ? current : record));
-      if (logs.length) setChanges((items) => [...logs, ...items].slice(0, 200));
       addHistoryEntries([current], "Register update");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Could not load official ABN history");
@@ -1578,7 +1580,7 @@ export default function Home() {
     setTab(nextTab);
   }
 
-  async function refreshAll(simulate = false) {
+  async function refreshAll(trigger: MonitoringTrigger) {
     if (!register.length || !currentAccount) return;
     setBusy(true);
     setNotice(`Updating ${register.length} record${register.length === 1 ? "" : "s"}…`);
@@ -1588,9 +1590,10 @@ export default function Home() {
     for (let index = 0; index < register.length; index += 1) {
       const previous = register[index];
       try {
-        let current = { ...(await lookupAbn(previous.abn)), bankDetails: previous.bankDetails };
-        if (simulate && index === 0) current = { ...current, gstRegistered: !current.gstRegistered, lastChecked: new Date().toISOString() };
-        logs.push(...compareRecord(previous, current));
+        const current = { ...(await lookupAbn(previous.abn)), bankDetails: previous.bankDetails };
+        if (previous.source === "official" && current.source === "official") {
+          logs.push(...compareRecord(previous, current, trigger));
+        }
         refreshed.push(current);
         checkedRecords.push(current);
       } catch {
@@ -1850,7 +1853,7 @@ export default function Home() {
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
-          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{currentAccount.authProvider === "google" && <em> / {currentAccount.abnLimit ?? 30}</em>}</strong><small>{currentAccount.authProvider === "google" ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "daily" ? "Daily check" : schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
+          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{currentAccount.authProvider === "google" && <em> / {currentAccount.abnLimit ?? 30}</em>}</strong><small>{currentAccount.authProvider === "google" ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>
@@ -1932,7 +1935,7 @@ export default function Home() {
         </div>}
 
         {tab === "register" && <div className="page-content">
-          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy || availableAbnSlots() <= 0}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()} disabled={availableAbnSlots() <= 0}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll(false)} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
+          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy || availableAbnSlots() <= 0}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()} disabled={availableAbnSlots() <= 0}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll("manual")} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
           <div className="table-meta"><span>Showing {filteredRegister.length} of {register.length} records · {register.filter((item) => item.status === "Active").length} Active</span><span>Last bulk update: {dateTime(lastRefresh)}</span></div>
           <div className="table-wrap records-table-wrap"><table className="records-table"><thead><tr><th>ABN / Entity name</th><th>ABN status</th><th>GST</th><th>Entity type</th><th>Main location</th><th>Bank details</th><th>Last checked</th><th aria-label="Actions" /></tr></thead><tbody>{filteredRegister.map((item) => {
             const isExpanded = expandedAbns.includes(item.abn);
@@ -1989,9 +1992,9 @@ export default function Home() {
           })}</tbody></table></div>
         </div>}
 
-        {tab === "changes" && <div className="page-content changes-layout"><section className="change-summary panel"><p className="eyebrow">Monitoring status</p><h2>Stay on top of critical changes</h2><p>Changes to ABN status, GST registration, entity name or main location are recorded here.</p><div className="schedule-card"><span>↻</span><div><b>{schedule === "daily" ? "Daily automatic check" : schedule === "weekly" ? "Weekly automatic check" : "Manual checks"}</b><small>The local demo runs due tasks while the page is open</small></div></div><button className="primary-button" onClick={() => void refreshAll(false)} disabled={busy}>{busy ? "Updating…" : "Check all ABNs now"}<span>→</span></button>{!apiConfigured && <button className="demo-button" onClick={() => void refreshAll(true)} disabled={busy}>Simulate a GST change</button>}</section><section className="timeline panel"><div className="panel-heading"><div><span className="step">3</span><h2>Change timeline</h2></div><small>{changes.length} items</small></div>{!changes.length ? <div className="empty-state compact"><span>◌</span><h3>No changes found yet</h3><p>Run an update, or simulate a change in demo mode.</p></div> : changes.map((item) => <div className="timeline-item" key={item.id}><span className={`severity ${item.severity}`} /><div><div><b>{item.entityName}</b><small>{formatAbn(item.abn)}</small></div><p>{item.description}</p><time>{dateTime(item.changedAt)}</time></div></div>)}</section></div>}
+        {tab === "changes" && <div className="page-content changes-layout"><section className="change-summary panel"><p className="eyebrow">Monitoring status</p><h2>Stay on top of critical changes</h2><p>Changes to ABN status, GST registration, entity name or main location are recorded only when a weekly check is due or you run a check now.</p><div className="schedule-card"><span>↻</span><div><b>{schedule === "weekly" ? "Weekly automatic check" : "Manual checks"}</b><small>{schedule === "weekly" ? "Runs when the workspace is open and the weekly check is due" : "Runs only when you click the button below"}</small></div></div><button className="primary-button" onClick={() => void refreshAll("manual")} disabled={busy}>{busy ? "Updating…" : "Check all ABNs now"}<span>→</span></button></section><section className="timeline panel"><div className="panel-heading"><div><span className="step">3</span><h2>Change timeline</h2></div><small>{changes.length} items</small></div>{!changes.length ? <div className="empty-state compact"><span>◌</span><h3>No changes found yet</h3><p>Changes found by weekly or manual checks will appear here.</p></div> : changes.map((item) => <div className="timeline-item" key={item.id}><span className={`severity ${item.severity}`} /><div><div><b>{item.entityName}</b><small>{formatAbn(item.abn)}</small></div><p>{item.description}</p><time>{dateTime(item.changedAt)}</time></div></div>)}</section></div>}
 
-        {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>A local webpage cannot run while it is closed. When opened, the app checks whether an update is due.</p><div className="radio-group">{[{ id: "daily", label: "Daily", note: "Every 24 hours" }, { id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }].map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
+        {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>Choose a weekly check while the workspace is open, or run monitoring only when requested.</p><div className="radio-group">{([{ id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }] as const).map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
         {tab === "settings" && currentAccount.authProvider === "google" && <div className="page-content billing-settings-wrap"><article className="panel settings-card billing-settings-card"><div className="setting-icon">$</div><h2>Plan & billing</h2><p>Your plan controls the maximum number of ABN and bank-detail records saved in this workspace.</p><div className="current-plan-row"><div><small>Current plan</small><b>{currentAccount.planName || "Free"}</b><span>{register.length} of {currentAccount.abnLimit ?? 30} records used</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i></div><div className="settings-plan-actions">{currentAccount.plan !== "starter" && <button type="button" disabled={billingBusy} onClick={() => void startCheckout("starter")}><b>Starter · A$9.90/mo</b><span>Up to 500 ABN / bank-detail records</span></button>}{currentAccount.plan !== "free" && <button className="manage-billing" type="button" disabled={billingBusy} onClick={() => void openBillingPortal()}>Manage billing in Stripe ↗</button>}</div></article></div>}
       </section>
       {editingBankRecord && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBankEditor(); }}>
