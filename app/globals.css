@@ -1000,6 +1000,25 @@ td small { font-size: 12px; }
 .landing-steps h3 { margin: 0 0 9px; font: 600 20px Georgia, serif; }
 .landing-steps li p { max-width: 520px; margin: 0; color: #69766f; font-size: 13px; line-height: 1.65; }
 
+.landing-pricing { padding: 118px max(28px, calc((100% - 1180px) / 2)) 125px; background: #f2f4ef; text-align: center; }
+.landing-pricing-heading { max-width: 720px; margin: 0 auto 55px; }
+.landing-pricing-heading h2 { margin: 0; font: 500 clamp(40px, 4.5vw, 62px)/1.03 Georgia, serif; letter-spacing: -.04em; }
+.landing-pricing-heading > p:last-child { max-width: 620px; margin: 22px auto 0; color: #64716b; font-size: 15px; line-height: 1.7; }
+.pricing-grid { width: min(800px, 100%); margin: 0 auto; display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: left; }
+.pricing-grid article { min-height: 450px; padding: 36px 34px 32px; display: flex; flex-direction: column; border: 1px solid #d8dfd9; border-radius: 16px; background: #fbfcf9; box-shadow: 0 12px 32px rgba(30,61,49,.04); position: relative; }
+.pricing-grid article.popular { border: 2px solid #28684f; background: #f8fcf9; box-shadow: 0 22px 52px rgba(30,81,61,.12); }
+.pricing-grid article > em { padding: 7px 12px; position: absolute; right: 20px; top: 20px; border-radius: 999px; background: #dceee5; color: #216046; font-size: 9px; font-style: normal; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
+.pricing-grid article > p { margin: 0 0 23px; color: #2a5f4b; font: 800 11px monospace; letter-spacing: .08em; text-transform: uppercase; }
+.pricing-grid h3 { margin: 0; color: #162b22; font: 500 47px/1 Georgia, serif; letter-spacing: -.04em; }
+.pricing-grid h3 > span { margin-right: 3px; font-size: 17px; vertical-align: top; }
+.pricing-grid h3 > small { margin-left: 6px; color: #79847e; font: 500 11px sans-serif; letter-spacing: 0; }
+.pricing-grid article > b { margin: 20px 0 25px; padding-bottom: 25px; border-bottom: 1px solid #e1e5e1; font-size: 14px; }
+.pricing-grid ul { margin: 0 0 30px; padding: 0; display: grid; gap: 14px; list-style: none; color: #5d6c65; font-size: 12px; }
+.pricing-grid li::before { content: "✓"; margin-right: 9px; color: #27805b; font-weight: 900; }
+.pricing-grid button { min-height: 48px; margin-top: auto; padding: 0 17px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #bfcfc7; border-radius: 9px; background: white; color: #194533; cursor: pointer; font-size: 12px; font-weight: 900; }
+.pricing-grid .popular button { border-color: #1f6148; background: #1f6148; color: white; }
+.landing-pricing > small { display: block; margin-top: 23px; color: #77847d; font-size: 10px; }
+
 .landing-security { min-height: 650px; display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 70px; padding: 90px max(28px, calc((100% - 1170px) / 2)); background: #173d31; color: white; overflow: hidden; }
 .security-orbit { width: min(490px, 100%); aspect-ratio: 1; position: relative; display: grid; place-items: center; }
 .security-ring { position: absolute; border: 1px solid rgba(166,208,190,.22); border-radius: 50%; }
@@ -1040,6 +1059,18 @@ td small { font-size: 12px; }
 .auth-modal-brand { display: flex; align-items: center; gap: 9px; margin-bottom: 37px; }
 .auth-modal-brand span { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; background: #1d5a43; color: white; font: 700 18px Georgia, serif; }
 .auth-modal-brand strong { font: 600 15px Georgia, serif; }
+.google-auth-button { width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; gap: 12px; border: 1px solid #cfd6d1; border-radius: 9px; background: white; color: #24362f; cursor: pointer; font-size: 13px; font-weight: 800; box-shadow: 0 3px 9px rgba(26,55,43,.04); }
+.google-auth-button:hover { border-color: #8da99c; box-shadow: 0 6px 16px rgba(26,55,43,.08); }
+.google-auth-button:disabled { cursor: not-allowed; opacity: .6; }
+.google-auth-button-host { width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; }
+.google-auth-button-host > div { width: 100% !important; display: flex; justify-content: center; }
+.google-auth-button-host.busy { border: 1px solid #cfd6d1; border-radius: 9px; background: white; color: #52625b; font-size: 13px; font-weight: 800; }
+.google-mark { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 50%, #fbbc05 0 75%, #ea4335 0); color: white; font-weight: 900; }
+.auth-divider { margin: 24px 0 19px; display: flex; align-items: center; gap: 12px; color: #8a948f; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #dfe3df; }
+.legacy-auth-form { display: grid; gap: 13px; }
+.legacy-auth-form label { margin: 0; }
+.legacy-signin { width: 100%; min-height: 44px; justify-content: center; }
 .contact-form .primary-button { margin-top: 18px; }
 .contact-honey { position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important; clip: rect(0 0 0 0) !important; white-space: nowrap !important; }
 .contact-consent { display: block; margin: 11px auto 0; color: #7a8680; font-size: 9px; line-height: 1.5; text-align: center; }
@@ -1050,6 +1081,29 @@ td small { font-size: 12px; }
 .contact-success > p:not(.eyebrow) { margin: 17px 0 28px; color: #66736d; font-size: 13px; line-height: 1.65; }
 .contact-success > p b { color: #273a32; }
 .contact-success .primary-button { height: 46px; }
+
+.plan-pill { min-height: 34px; padding: 0 12px; display: inline-flex; align-items: center; border: 1px solid #d5e2dc; border-radius: 999px; background: #f1f7f4; color: #28644d; font-size: 11px; font-weight: 800; }
+.stats-row strong em { color: #7a8680; font: 600 13px sans-serif; }
+.sidebar-plan { margin: 0 6px 12px; padding: 13px; border: 1px solid rgba(204,230,219,.18); border-radius: 11px; background: rgba(255,255,255,.06); }
+.sidebar-plan > div { display: flex; align-items: center; justify-content: space-between; color: #d9e9e1; font-size: 11px; }
+.sidebar-plan > div span { color: #8fb0a2; font-size: 9px; }
+.sidebar-plan > i, .current-plan-row > i { height: 5px; margin: 10px 0; display: block; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.13); }
+.sidebar-plan > i span, .current-plan-row > i span { height: 100%; display: block; border-radius: inherit; background: #72c09e; }
+.sidebar-plan button { padding: 0; border: 0; background: transparent; color: #bce0d0; cursor: pointer; font-size: 9px; font-weight: 900; }
+.account-card > img { width: 38px; height: 38px; border-radius: 10px; object-fit: cover; }
+.billing-settings-wrap { padding-top: 0 !important; }
+.billing-settings-card { max-width: none; }
+.current-plan-row { margin: 22px 0; padding: 18px; border: 1px solid var(--line); border-radius: 11px; background: #f7faf8; }
+.current-plan-row > div { display: grid; grid-template-columns: 1fr auto; gap: 4px 20px; }
+.current-plan-row small { color: #75827b; font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.current-plan-row b { grid-row: 2; font-size: 21px; }
+.current-plan-row > div span { grid-column: 2; grid-row: 1 / 3; align-self: center; color: #587066; font-size: 12px; font-weight: 700; }
+.current-plan-row > i { background: #dfe8e3; }
+.settings-plan-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.settings-plan-actions button { min-width: 210px; padding: 13px 15px; display: grid; gap: 4px; border: 1px solid #cbdad2; border-radius: 9px; background: white; color: #285d48; cursor: pointer; text-align: left; }
+.settings-plan-actions button b { font-size: 12px; }
+.settings-plan-actions button span { color: #77847d; font-size: 10px; }
+.settings-plan-actions button.manage-billing { display: block; min-width: 0; border: 0; background: transparent; font-weight: 800; }
 @keyframes auth-fade { from { opacity: 0; } }
 @keyframes auth-rise { from { opacity: 0; transform: translateY(12px) scale(.98); } }
 
@@ -1061,6 +1115,8 @@ td small { font-size: 12px; }
   .landing-product-shot { min-width: 760px; width: calc(100% + 40px); margin: 65px -40px 0 30px; }
   .landing-feature.large { grid-template-columns: 1fr 1.3fr; }
   .landing-steps { grid-template-columns: 1fr; gap: 50px; }
+  .pricing-grid { grid-template-columns: 1fr; max-width: 610px; margin: 0 auto; }
+  .pricing-grid article { min-height: 390px; }
 }
 
 @media (max-width: 760px) {
@@ -1069,9 +1125,10 @@ td small { font-size: 12px; }
   .landing-brand strong { font-size: 16px; }
   .landing-signin { display: none; }
   .landing-nav-cta { min-height: 38px; padding: 0 13px; }
-  .landing-hero { width: calc(100% - 36px); min-height: 0; padding: 64px 0 86px; }
+  .landing-hero { width: calc(100% - 36px); min-height: 0; padding: 64px 0 86px; display: block; }
+  .landing-hero-copy { width: 100%; min-width: 0; }
   .landing-kicker { font-size: 8px; }
-  .landing-hero h1 { font-size: clamp(53px, 17vw, 76px); }
+  .landing-hero h1 { font-size: clamp(50px, 14.2vw, 58px); }
   .landing-hero-copy > p { font-size: 15px; }
   .landing-hero-actions { align-items: stretch; flex-direction: column; }
   .landing-primary, .landing-secondary { width: 100%; }
@@ -1092,6 +1149,9 @@ td small { font-size: 12px; }
   .compare-mini > i { margin: -10px auto; position: relative; z-index: 2; }
   .alert-mini { margin-top: 36px; }
   .landing-steps { padding: 83px 18px; gap: 38px; }
+  .landing-pricing { padding: 82px 18px 88px; }
+  .landing-pricing-heading h2 { font-size: 41px; }
+  .pricing-grid article { min-height: 0; padding: 29px 24px; }
   .landing-steps li { grid-template-columns: 52px 1fr; gap: 12px; }
   .landing-security { min-height: 0; grid-template-columns: 1fr; gap: 45px; padding: 75px 18px 83px; }
   .security-orbit { width: 350px; max-width: 95vw; margin: 0 auto; }

@@ -7,9 +7,23 @@ import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type B
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        id?: {
+          initialize(options: { client_id: string; callback(response: { credential?: string }): void; ux_mode: "popup" }): void;
+          renderButton(element: HTMLElement, options: Record<string, string | number>): void;
+        };
+      };
+    };
+  }
+}
+
 type Tab = "verify" | "today" | "register" | "changes" | "settings";
 type Source = "official" | "demo" | "pending";
 type RegisterFilter = "all" | "attention" | "active" | "cancelled" | "gst-registered" | "gst-not-registered";
+type BillingPlan = "free" | "starter";
 
 type OfficialHistoryRange = {
   value: string;
@@ -53,6 +67,23 @@ type Account = {
   setupComplete: boolean;
   ownAbn: string;
   companyRecord?: AbnRecord;
+  authProvider?: "local" | "managed" | "google";
+  workspaceId?: string;
+  picture?: string;
+  plan?: BillingPlan;
+  planName?: string;
+  subscriptionStatus?: string;
+  abnLimit?: number;
+};
+
+type CloudWorkspaceState = {
+  account?: Partial<Account>;
+  register?: AbnRecord[];
+  changes?: ChangeLog[];
+  history?: AbnHistoryEntry[];
+  today?: TodayReview[];
+  schedule?: string;
+  lastRefresh?: string;
 };
 
 type ContractDocument = {
@@ -544,36 +575,200 @@ export default function Home() {
   const [editingCheckNameId, setEditingCheckNameId] = useState<string | null>(null);
   const [checkNameDraft, setCheckNameDraft] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [cloudWorkspaceReady, setCloudWorkspaceReady] = useState(false);
+  const [googleConfigured, setGoogleConfigured] = useState(false);
+  const [googleClientId, setGoogleClientId] = useState("");
+  const [googleSigningIn, setGoogleSigningIn] = useState(false);
+  const [billingBusy, setBillingBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const googleButtonRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
-    const sessionId = localStorage.getItem(STORAGE.session);
-    const active = storedAccounts.find((account) => account.id === sessionId) ?? null;
-    setAccounts(storedAccounts);
-    setCurrentAccount(active);
-    if (active) loadAccountData(active.id);
-    fetch("/api/abn").then((response) => response.json()).then((result) => setApiConfigured(Boolean(result.configured))).catch(() => setApiConfigured(false));
-    setHydrated(true);
+    let cancelled = false;
+    async function hydrate() {
+      const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
+      setAccounts(storedAccounts);
+      try {
+        const sessionResponse = await fetch("/api/auth/session");
+        const session = await sessionResponse.json() as {
+          authenticated?: boolean;
+          googleConfigured?: boolean;
+          googleClientId?: string;
+          user?: { id: string; email: string; name: string; picture: string };
+          workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
+        };
+        if (cancelled) return;
+        setGoogleConfigured(Boolean(session.googleConfigured));
+        setGoogleClientId(session.googleClientId ?? "");
+        if (session.authenticated && session.user && session.workspace) {
+          const workspaceResponse = await fetch("/api/workspace");
+          const workspaceResult = await workspaceResponse.json() as { state?: CloudWorkspaceState };
+          const savedAccount = workspaceResult.state?.account ?? {};
+          const account: Account = {
+            id: `google-${session.user.id}`,
+            companyName: savedAccount.companyName || session.workspace.name || session.user.name,
+            email: session.user.email,
+            passwordHash: "google-oauth",
+            createdAt: savedAccount.createdAt || new Date().toISOString(),
+            setupComplete: Boolean(savedAccount.setupComplete),
+            ownAbn: savedAccount.ownAbn || "",
+            companyRecord: savedAccount.companyRecord,
+            authProvider: "google",
+            workspaceId: session.workspace.id,
+            picture: session.user.picture,
+            plan: session.workspace.plan,
+            planName: session.workspace.planName,
+            subscriptionStatus: session.workspace.subscriptionStatus,
+            abnLimit: session.workspace.abnLimit,
+          };
+          setCurrentAccount(account);
+          setRegister(workspaceResult.state?.register ?? []);
+          setChanges(workspaceResult.state?.changes ?? []);
+          setHistory(workspaceResult.state?.history ?? []);
+          setTodayReviews(workspaceResult.state?.today ?? []);
+          setSchedule(workspaceResult.state?.schedule ?? "daily");
+          setLastRefresh(workspaceResult.state?.lastRefresh ?? "");
+          setDocuments([]);
+          setChecks([]);
+          setCloudWorkspaceReady(true);
+        } else {
+          const sessionId = localStorage.getItem(STORAGE.session);
+          const active = storedAccounts.find((account) => account.id === sessionId) ?? null;
+          setCurrentAccount(active);
+          if (active) loadAccountData(active.id);
+        }
+      } catch {
+        const sessionId = localStorage.getItem(STORAGE.session);
+        const active = storedAccounts.find((account) => account.id === sessionId) ?? null;
+        setCurrentAccount(active);
+        if (active) loadAccountData(active.id);
+      } finally {
+        if (!cancelled) setHydrated(true);
+      }
+      fetch("/api/abn").then((response) => response.json()).then((result) => setApiConfigured(Boolean(result.configured))).catch(() => setApiConfigured(false));
+    }
+    void hydrate();
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!hydrated || !currentAccount) return;
+    if (!showAuth || !googleConfigured || !googleClientId) return;
+    let cancelled = false;
+    const scriptId = "google-identity-services";
+
+    const renderGoogleButton = () => {
+      if (cancelled || !googleButtonRef.current || !window.google?.accounts?.id) return;
+      googleButtonRef.current.replaceChildren();
+      window.google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: async (response: { credential?: string }) => {
+          if (!response.credential) {
+            setAuthError("Google did not return a sign-in credential. Please try again.");
+            return;
+          }
+          setGoogleSigningIn(true);
+          setAuthError("");
+          try {
+            const signInResponse = await fetch("/api/auth/google/credential", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ credential: response.credential }),
+            });
+            const result = await signInResponse.json() as { error?: string };
+            if (!signInResponse.ok) throw new Error(result.error || "Google sign-in failed.");
+            window.location.assign("/");
+          } catch (error) {
+            setGoogleSigningIn(false);
+            setAuthError(error instanceof Error ? error.message : "Google sign-in failed.");
+          }
+        },
+        ux_mode: "popup",
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        type: "standard",
+        theme: "outline",
+        size: "large",
+        text: authMode === "register" ? "signup_with" : "signin_with",
+        shape: "rectangular",
+        logo_alignment: "left",
+        width: Math.min(400, Math.max(240, googleButtonRef.current.clientWidth)),
+      });
+    };
+
+    const existing = document.getElementById(scriptId) as HTMLScriptElement | null;
+    if (window.google?.accounts?.id) renderGoogleButton();
+    else if (existing) existing.addEventListener("load", renderGoogleButton, { once: true });
+    else {
+      const script = document.createElement("script");
+      script.id = scriptId;
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.addEventListener("load", renderGoogleButton, { once: true });
+      script.addEventListener("error", () => setAuthError("Google sign-in could not be loaded. Please refresh and try again."), { once: true });
+      document.head.appendChild(script);
+    }
+    return () => {
+      cancelled = true;
+      existing?.removeEventListener("load", renderGoogleButton);
+    };
+  }, [authMode, googleClientId, googleConfigured, showAuth]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const googleAuthError = params.get("auth_error");
+    if (!googleAuthError) return;
+    setAuthMode("signin");
+    setAuthError(googleAuthError);
+    setShowAuth(true);
+    params.delete("auth_error");
+    const nextQuery = params.toString();
+    window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "register"), JSON.stringify(register));
   }, [register, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount) return;
+    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "changes"), JSON.stringify(changes));
   }, [changes, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount) return;
+    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "history"), JSON.stringify(history));
   }, [history, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount) return;
+    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "today"), JSON.stringify(todayReviews));
   }, [todayReviews, currentAccount, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || !cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    const timer = window.setTimeout(async () => {
+      const response = await fetch("/api/workspace", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state: { account: currentAccount, register, changes, history, today: todayReviews, schedule, lastRefresh } }),
+      });
+      const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
+      if (!response.ok) {
+        setNotice(result.error || "Your workspace could not be saved.");
+        return;
+      }
+      if (result.workspace) setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [changes, cloudWorkspaceReady, currentAccount?.companyName, currentAccount?.companyRecord, currentAccount?.ownAbn, currentAccount?.setupComplete, history, hydrated, lastRefresh, register, schedule, todayReviews]);
+
+  useEffect(() => {
+    if (!cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    const pendingPlan = localStorage.getItem("abn-guard-pending-plan");
+    if (pendingPlan !== "starter") return;
+    localStorage.removeItem("abn-guard-pending-plan");
+    void startCheckout(pendingPlan);
+  }, [cloudWorkspaceReady, currentAccount?.authProvider]);
 
   useEffect(() => {
     let refreshTimer = 0;
@@ -775,7 +970,65 @@ export default function Home() {
 
   function persistAccounts(next: Account[]) {
     setAccounts(next);
-    localStorage.setItem(STORAGE.accounts, JSON.stringify(next));
+    localStorage.setItem(STORAGE.accounts, JSON.stringify(next.filter((account) => account.authProvider !== "google")));
+  }
+
+  function startGoogleSignIn() {
+    setAuthMode("register");
+    setShowAuth(true);
+    if (!googleConfigured) {
+      setAuthError("Google sign-in is being activated. Please try again shortly.");
+      return;
+    }
+    setAuthError("");
+  }
+
+  function chooseLandingPlan(plan: BillingPlan) {
+    if (plan !== "free") localStorage.setItem("abn-guard-pending-plan", plan);
+    startGoogleSignIn();
+  }
+
+  async function startCheckout(plan: Exclude<BillingPlan, "free">) {
+    if (!currentAccount || currentAccount.authProvider !== "google") {
+      setShowAuth(true);
+      setAuthMode("signin");
+      setAuthError("Sign in with Google to choose a paid plan.");
+      return;
+    }
+    setBillingBusy(true);
+    try {
+      const response = await fetch("/api/billing/checkout", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ plan }) });
+      const result = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
+      window.location.href = result.url;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Checkout could not be started.");
+      setBillingBusy(false);
+    }
+  }
+
+  async function openBillingPortal() {
+    setBillingBusy(true);
+    try {
+      const response = await fetch("/api/billing/portal", { method: "POST" });
+      const result = await response.json() as { url?: string; error?: string };
+      if (!response.ok || !result.url) throw new Error(result.error || "Billing portal could not be opened.");
+      window.location.href = result.url;
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Billing portal could not be opened.");
+      setBillingBusy(false);
+    }
+  }
+
+  function availableAbnSlots() {
+    if (currentAccount?.authProvider !== "google") return Number.POSITIVE_INFINITY;
+    return Math.max(0, (currentAccount.abnLimit ?? 10) - register.length);
+  }
+
+  function quotaMessage() {
+    const planName = currentAccount?.planName || "Free";
+    const limit = currentAccount?.abnLimit ?? 10;
+    return `${planName} includes up to ${limit} saved ABNs. Upgrade your plan to add more.`;
   }
 
   async function submitAuth(event: FormEvent) {
@@ -921,6 +1174,7 @@ export default function Home() {
   }
 
   function signOut() {
+    if (currentAccount?.authProvider === "google") void fetch("/api/auth/logout", { method: "POST" });
     localStorage.removeItem(STORAGE.session);
     setCurrentAccount(null);
     setRegister([]);
@@ -930,6 +1184,7 @@ export default function Home() {
     setExpandedAbns([]);
     setLoadingHistoryAbns([]);
     setDocuments([]);
+    setCloudWorkspaceReady(false);
     setAuthPassword("");
     setAuthMode("signin");
   }
@@ -1210,14 +1465,30 @@ export default function Home() {
     setCheckNameDraft("");
   }
 
+  function recordsWithinQuota(items: AbnRecord[]) {
+    const existing = new Set(register.map((item) => item.abn));
+    let slots = availableAbnSlots();
+    return items.filter((item) => {
+      if (existing.has(item.abn)) return true;
+      if (slots <= 0) return false;
+      existing.add(item.abn);
+      slots -= 1;
+      return true;
+    });
+  }
+
   function addVerifiedRecords(items: AbnRecord[]) {
-    if (!items.length) return;
+    const accepted = recordsWithinQuota(items);
+    if (!accepted.length) {
+      if (items.length) setNotice(quotaMessage());
+      return;
+    }
     setRegister((previous) => {
       const map = new Map(previous.map((item) => [item.abn, item]));
-      items.forEach((item) => map.set(item.abn, item));
+      accepted.forEach((item) => map.set(item.abn, item));
       return [...map.values()];
     });
-    addHistoryEntries(items, "Added to register");
+    addHistoryEntries(accepted, "Added to register");
   }
 
   function completeVerificationBatch() {
@@ -1247,7 +1518,8 @@ export default function Home() {
       official: check.official,
       files: check.fileIds.map((fileId) => documents.find((document) => document.id === fileId)).filter((document): document is ContractDocument => Boolean(document)).map((document) => ({ id: document.id, name: document.name })),
     }));
-    const verifiedRecords = payeeChecks.filter(checkIsVerified).map((check) => check.official);
+    const eligibleVerifiedRecords = payeeChecks.filter(checkIsVerified).map((check) => check.official);
+    const verifiedRecords = recordsWithinQuota(eligibleVerifiedRecords);
     setTodayReviews((previous) => [...completed, ...previous].slice(0, 500));
     addVerifiedRecords(verifiedRecords);
     documents.forEach((document) => URL.revokeObjectURL(document.url));
@@ -1257,13 +1529,18 @@ export default function Home() {
     setEditingCheckNameId(null);
     setCheckNameDraft("");
     if (fileRef.current) fileRef.current.value = "";
-    const doubleChecks = completed.length - verifiedRecords.length;
-    setNotice(`Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Today for double check` : ""}.`);
+    const doubleChecks = completed.filter((item) => item.status === "double-check").length;
+    const quotaSkipped = eligibleVerifiedRecords.length - verifiedRecords.length;
+    setNotice(quotaSkipped ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}` : `Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Today for double check` : ""}.`);
   }
 
   function verifyTodayReview(reviewId: string) {
     const review = todayReviews.find((item) => item.id === reviewId);
     if (!review || review.status === "verified") return;
+    if (!register.some((item) => item.abn === review.official.abn) && availableAbnSlots() <= 0) {
+      setNotice(quotaMessage());
+      return;
+    }
     const verifiedAt = new Date().toISOString();
     setTodayReviews((previous) => previous.map((item) => item.id === reviewId ? { ...item, status: "verified", verifiedAt } : item));
     addVerifiedRecords([review.official]);
@@ -1336,6 +1613,10 @@ export default function Home() {
       setNotice("Enter a valid 11-digit ABN.");
       return;
     }
+    if (!register.some((item) => item.abn === abn) && availableAbnSlots() <= 0) {
+      setNotice(quotaMessage());
+      return;
+    }
     setBusy(true);
     try {
       const result = await lookupAbn(abn);
@@ -1382,13 +1663,15 @@ export default function Home() {
           bankDetails: bankDetails.bsb || bankDetails.accountNumber ? bankDetails : undefined,
         } satisfies AbnRecord;
       }).filter((item): item is AbnRecord => Boolean(item));
+      const accepted = recordsWithinQuota(imported);
       setRegister((previous) => {
         const map = new Map(previous.map((item) => [item.abn, item]));
-        imported.forEach((item) => map.set(item.abn, item));
+        accepted.forEach((item) => map.set(item.abn, item));
         return [...map.values()];
       });
-      addHistoryEntries(imported, "Imported from file");
-      setNotice(`Imported ${imported.length} valid ABN${imported.length === 1 ? "" : "s"} from ${file.name}`);
+      addHistoryEntries(accepted, "Imported from file");
+      const skipped = imported.length - accepted.length;
+      setNotice(skipped ? `Imported ${accepted.length} ABNs. ${skipped} could not be added because this workspace reached its plan limit.` : `Imported ${accepted.length} valid ABN${accepted.length === 1 ? "" : "s"} from ${file.name}`);
     } catch {
       setNotice("Import failed. Use an XLSX, XLS or CSV file with ABN in the first column.");
     } finally {
@@ -1441,8 +1724,8 @@ export default function Home() {
       <main className="landing-shell">
         <nav className="landing-nav" aria-label="Main navigation">
           <a className="landing-brand" href="#top" aria-label="ABN Guard home"><span>A</span><strong>ABN Guard</strong></a>
-          <div className="landing-nav-links"><a href="#product">Product</a><a href="#how-it-works">How it works</a><a href="#security">Security</a></div>
-          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Contact us <span>↗</span></button></div>
+          <div className="landing-nav-links"><a href="#product">Product</a><a href="#how-it-works">How it works</a><a href="#pricing">Pricing</a><a href="#security">Security</a></div>
+          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Join now <span>↗</span></button></div>
         </nav>
 
         <section className="landing-hero" id="top">
@@ -1450,7 +1733,7 @@ export default function Home() {
             <div className="landing-kicker"><span>✓</span> Built for Australian finance teams</div>
             <h1>Every supplier.<br /><em>Verified.</em></h1>
             <p>Turn contracts and invoices into verified supplier records. Check ABNs, GST status and bank details before money moves.</p>
-            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Try the free trial <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
+            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Join now — it’s free <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
             <div className="landing-trust"><span><b>✓</b> No credit card</span><span><b>✓</b> Set up in minutes</span><span><b>✓</b> Australian data</span></div>
           </div>
 
@@ -1483,39 +1766,34 @@ export default function Home() {
           <ol><li><span>01</span><div><h3>Upload your documents</h3><p>Add multiple PDF, DOCX or TXT files at once. They are read directly inside your workspace.</p></div></li><li><span>02</span><div><h3>Review the comparison</h3><p>ABN Guard matches supplier claims against official registration records and your saved bank details.</p></div></li><li><span>03</span><div><h3>Save a verified record</h3><p>Resolve any flagged differences, then add the supplier to a register your team can trust.</p></div></li></ol>
         </section>
 
+        <section className="landing-pricing" id="pricing">
+          <div className="landing-pricing-heading"><p className="landing-label">SIMPLE MONTHLY PRICING</p><h2>Start free. Grow when<br />your register does.</h2><p>Every plan includes document checks, ABN and GST verification, bank-detail comparison and change monitoring.</p></div>
+          <div className="pricing-grid">
+            <article><p>Free</p><h3><span>A$</span>0<small>/month</small></h3><b>Up to 10 saved ABNs</b><ul><li>Google sign-in</li><li>Supplier verification</li><li>ABN register and alerts</li></ul><button type="button" onClick={() => chooseLandingPlan("free")}>Join now <span>→</span></button></article>
+            <article className="popular"><em>Most popular</em><p>Starter</p><h3><span>A$</span>9.90<small>/month</small></h3><b>Up to 200 saved ABNs</b><ul><li>Everything in Free</li><li>20× larger register</li><li>Stripe subscription management</li></ul><button type="button" onClick={() => chooseLandingPlan("starter")}>Choose Starter <span>→</span></button></article>
+          </div>
+          <small>Prices are in Australian dollars. Cancel or change plan through the secure Stripe billing portal.</small>
+        </section>
+
         <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files remain in your browser.</p><div><span><b>01</b>Local document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
 
-        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Try the free trial <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
+        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Join now — it’s free <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
 
-        <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><a href="#security">Security</a><button type="button" onClick={() => openAuth("signin")}>Sign in</button></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
+        <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><a href="#pricing">Pricing</a><a href="#security">Security</a><button type="button" onClick={() => openAuth("signin")}>Sign in</button></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
 
         {showAuth && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuth(false); }}>
           <section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
             <button className="auth-modal-close" type="button" aria-label="Close" onClick={() => setShowAuth(false)}>×</button>
             <div className="auth-modal-brand"><span>A</span><strong>ABN Guard</strong></div>
-            {authMode === "register" ? contactSubmitted ? <div className="contact-success" role="status">
-              <span>✓</span><p className="eyebrow">REQUEST RECEIVED</p><h2 id="auth-title">Thanks — we’ll be in touch.</h2><p>Your free trial request for <b>{authCompany.trim()}</b> has been sent. We’ll contact you at <b>{authEmail.trim()}</b>.</p><button className="primary-button" type="button" onClick={() => setShowAuth(false)}>Done <span>→</span></button>
-            </div> : <form className="auth-form contact-form" onSubmit={(event) => void submitContact(event)}>
-              <p className="eyebrow">CONTACT US</p>
-              <h2 id="auth-title">Try the free trial right now!</h2>
-              <p>Tell us where to reach you and we’ll help you get started with ABN Guard.</p>
-              <label>Company name<input autoFocus required maxLength={120} value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>
-              <label>Work email<input required maxLength={180} type="email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" autoComplete="email" /></label>
-              <label className="contact-honey" aria-hidden="true">Website<input tabIndex={-1} autoComplete="off" value={contactWebsite} onChange={(event) => setContactWebsite(event.target.value)} /></label>
-              {contactError && <div className="auth-error">{contactError}</div>}
-              <button className="primary-button" type="submit" disabled={contactSubmitting}>{contactSubmitting ? "Sending…" : "Contact us — start free trial"}<span>→</span></button>
-              <small className="contact-consent">By submitting, you agree that ABN Guard may contact you about the free trial.</small>
-              <div className="auth-switch">Already have an account?<button type="button" onClick={() => { setAuthMode("signin"); setAuthError(""); }}>Sign in</button></div>
-            </form> : <form className="auth-form" onSubmit={(event) => void submitAuth(event)}>
-              <p className="eyebrow">WELCOME BACK</p>
-              <h2 id="auth-title">Sign in to ABN Guard</h2>
-              <p>Access your company’s saved ABNs and contract checks.</p>
-              <label>Email or username<input autoFocus type="text" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com or username" autoComplete="username" /></label>
-              <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Enter your password" autoComplete="current-password" /></label>
+            <div className="auth-form">
+              <p className="eyebrow">{authMode === "register" ? "CREATE YOUR WORKSPACE" : "WELCOME BACK"}</p>
+              <h2 id="auth-title">{authMode === "register" ? "Start checking suppliers for free" : "Sign in to ABN Guard"}</h2>
+              <p>{authMode === "register" ? "Join with Google to create your private workspace. Your Google account becomes your secure ABN Guard sign-in, and no card is required for the first 10 ABNs." : "Use the same Google account you joined with to open your company’s supplier workspace."}</p>
+              {googleConfigured ? <div className={googleSigningIn ? "google-auth-button-host busy" : "google-auth-button-host"} ref={googleButtonRef}>{googleSigningIn && <span>Signing you in…</span>}</div> : <button className="google-auth-button" type="button" disabled><span className="google-mark">G</span>{authMode === "register" ? "Join with Google" : "Sign in with Google"}</button>}
               {authError && <div className="auth-error">{authError}</div>}
-              <button className="primary-button" type="submit">Sign in<span>→</span></button>
-              <div className="auth-switch">Want to try ABN Guard?<button type="button" onClick={() => { setAuthMode("register"); setContactError(""); setContactSubmitted(false); }}>Contact us</button></div>
-            </form>}
+              {authMode === "signin" && <><div className="auth-divider"><span>Beta accounts</span></div><form className="legacy-auth-form" onSubmit={(event) => void submitAuth(event)}><label>Username<input type="text" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Beta username" autoComplete="username" /></label><label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password" autoComplete="current-password" /></label><button className="secondary-button legacy-signin" type="submit">Sign in with beta account</button></form></>}
+              <div className="auth-switch">{authMode === "register" ? "Already have an account?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Join now"}</button></div>
+            </div>
           </section>
         </div>}
       </main>
@@ -1560,17 +1838,18 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">A</span><div><strong>ABN Guard</strong><small>Supplier verification</small></div></div>
         <nav><p className="nav-title">Workspace</p>{nav.map((item) => <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => navigateTo(item.id)}><span>{item.icon}</span><div><b>{item.label}</b><small>{item.hint}</small></div></button>)}</nav>
         <div className="sidebar-bottom">
+          {currentAccount.authProvider === "google" && <div className="sidebar-plan"><div><b>{currentAccount.planName || "Free"}</b><span>{register.length} / {currentAccount.abnLimit ?? 10} ABNs</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 10) * 100)}%` }} /></i><button type="button" onClick={() => navigateTo("settings")}>{currentAccount.plan === "starter" ? "Manage" : "Upgrade"}</button></div>}
           <button className={tab === "settings" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")}><span>⚙</span><div><b>Connection</b><small>{apiConfigured ? "Official API" : "Demo mode"}</small></div></button>
-          <div className="account-card"><span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span><div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button onClick={signOut} aria-label="Sign out">↗</button></div>
+          <div className="account-card">{currentAccount.picture ? <img src={currentAccount.picture} alt="" referrerPolicy="no-referrer" /> : <span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span>}<div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button onClick={signOut} aria-label="Sign out">↗</button></div>
         </div>
       </aside>
 
       <section className="workspace">
-        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "today" ? "Daily review workspace" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "today" ? "Today" : tab === "register" ? "Records" : tab === "changes" ? "Alerts" : "Connection & update settings"}</h1></div><div className="top-actions"><span className={apiConfigured ? "mode-pill live" : "mode-pill"}><i />{apiConfigured ? "Official data" : "Demo data"}</span><button className="ghost-button" onClick={() => navigateTo("settings")}>Settings</button></div></header>
+        <header className="topbar"><div><p className="eyebrow">{tab === "verify" ? "Contract due diligence" : tab === "today" ? "Daily review workspace" : tab === "register" ? "Supplier master data" : tab === "changes" ? "Ongoing monitoring" : "Data connection"}</p><h1>{tab === "verify" ? "Verify ABNs in contracts" : tab === "today" ? "Today" : tab === "register" ? "Records" : tab === "changes" ? "Alerts" : "Connection & update settings"}</h1></div><div className="top-actions">{currentAccount.authProvider === "google" && <span className="plan-pill">{currentAccount.planName || "Free"} · {register.length}/{currentAccount.abnLimit ?? 10}</span>}<span className={apiConfigured ? "mode-pill live" : "mode-pill"}><i />{apiConfigured ? "Official data" : "Demo data"}</span><button className="ghost-button" onClick={() => navigateTo("settings")}>Settings</button></div></header>
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
-          <div className="stats-row"><article><span>Saved ABNs</span><strong>{register.length}</strong><small>{currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "daily" ? "Daily check" : schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
+          <div className="stats-row"><article><span>Saved ABNs</span><strong>{register.length}{currentAccount.authProvider === "google" && <em> / {currentAccount.abnLimit ?? 10}</em>}</strong><small>{currentAccount.authProvider === "google" ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "daily" ? "Daily check" : schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>
@@ -1652,7 +1931,7 @@ export default function Home() {
         </div>}
 
         {tab === "register" && <div className="page-content">
-          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll(false)} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
+          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy || availableAbnSlots() <= 0}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()} disabled={availableAbnSlots() <= 0}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll(false)} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
           <div className="table-meta"><span>Showing {filteredRegister.length} of {register.length} records · {register.filter((item) => item.status === "Active").length} Active</span><span>Last bulk update: {dateTime(lastRefresh)}</span></div>
           <div className="table-wrap records-table-wrap"><table className="records-table"><thead><tr><th>ABN / Entity name</th><th>ABN status</th><th>GST</th><th>Entity type</th><th>Main location</th><th>Bank details</th><th>Last checked</th><th aria-label="Actions" /></tr></thead><tbody>{filteredRegister.map((item) => {
             const isExpanded = expandedAbns.includes(item.abn);
@@ -1712,6 +1991,7 @@ export default function Home() {
         {tab === "changes" && <div className="page-content changes-layout"><section className="change-summary panel"><p className="eyebrow">Monitoring status</p><h2>Stay on top of critical changes</h2><p>Changes to ABN status, GST registration, entity name or main location are recorded here.</p><div className="schedule-card"><span>↻</span><div><b>{schedule === "daily" ? "Daily automatic check" : schedule === "weekly" ? "Weekly automatic check" : "Manual checks"}</b><small>The local demo runs due tasks while the page is open</small></div></div><button className="primary-button" onClick={() => void refreshAll(false)} disabled={busy}>{busy ? "Updating…" : "Check all ABNs now"}<span>→</span></button>{!apiConfigured && <button className="demo-button" onClick={() => void refreshAll(true)} disabled={busy}>Simulate a GST change</button>}</section><section className="timeline panel"><div className="panel-heading"><div><span className="step">3</span><h2>Change timeline</h2></div><small>{changes.length} items</small></div>{!changes.length ? <div className="empty-state compact"><span>◌</span><h3>No changes found yet</h3><p>Run an update, or simulate a change in demo mode.</p></div> : changes.map((item) => <div className="timeline-item" key={item.id}><span className={`severity ${item.severity}`} /><div><div><b>{item.entityName}</b><small>{formatAbn(item.abn)}</small></div><p>{item.description}</p><time>{dateTime(item.changedAt)}</time></div></div>)}</section></div>}
 
         {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>A local webpage cannot run while it is closed. When opened, the app checks whether an update is due.</p><div className="radio-group">{[{ id: "daily", label: "Daily", note: "Every 24 hours" }, { id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }].map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
+        {tab === "settings" && currentAccount.authProvider === "google" && <div className="page-content billing-settings-wrap"><article className="panel settings-card billing-settings-card"><div className="setting-icon">$</div><h2>Plan & billing</h2><p>Your plan controls the maximum number of unique ABNs saved in this workspace.</p><div className="current-plan-row"><div><small>Current plan</small><b>{currentAccount.planName || "Free"}</b><span>{register.length} of {currentAccount.abnLimit ?? 10} ABNs used</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 10) * 100)}%` }} /></i></div><div className="settings-plan-actions">{currentAccount.plan !== "starter" && <button type="button" disabled={billingBusy} onClick={() => void startCheckout("starter")}><b>Starter · A$9.90/mo</b><span>Up to 200 ABNs</span></button>}{currentAccount.plan !== "free" && <button className="manage-billing" type="button" disabled={billingBusy} onClick={() => void openBillingPortal()}>Manage billing in Stripe ↗</button>}</div></article></div>}
       </section>
       {editingBankRecord && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBankEditor(); }}>
         <section className="bank-editor" role="dialog" aria-modal="true" aria-labelledby="bank-editor-title">

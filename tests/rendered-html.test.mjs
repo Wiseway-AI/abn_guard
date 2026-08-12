@@ -33,7 +33,7 @@ test("server-renders the ABN Guard application shell", async () => {
   assert.match(html, /<title>ABN Guard · Supplier Verification<\/title>/i);
   assert.match(
     html,
-    /Extract and verify ABNs, GST status and supplier registration details from contracts/i,
+    /Verify supplier ABNs, GST status and bank details, then monitor a secure cloud supplier register/i,
   );
   assert.match(html, /<div class="app-loading">Loading ABN Guard…<\/div>/i);
 });
@@ -57,4 +57,23 @@ test("keeps service credentials on the server", async () => {
   assert.doesNotMatch(page, /process\.env\.ABN_LOOKUP_GUID/);
   assert.doesNotMatch(page, /process\.env\.ADMIN_PASSWORD/);
   assert.doesNotMatch(page, /BOW_PASSWORD|GCGF_PASSWORD/);
+});
+
+test("presents Google as the account-bound join and sign-in method", async () => {
+  const [page, credential, verifier, database] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/server/google-identity.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/server/database.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /Join now/);
+  assert.match(page, /Join with Google/);
+  assert.match(page, /Sign in with Google/);
+  assert.match(credential, /upsertGoogleUser/);
+  assert.match(credential, /createSessionCookie/);
+  assert.match(verifier, /RSASSA-PKCS1-v1_5/);
+  assert.match(verifier, /audience\.includes\(clientId\)/);
+  assert.match(database, /WHERE owner_user_id = \?/);
+  assert.match(database, /INSERT INTO workspaces/);
 });

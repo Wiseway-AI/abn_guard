@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ABN Guard · Supplier Verification",
-  description: "Extract and verify ABNs, GST status and supplier registration details from contracts, with a local ABN register.",
+  description: "Verify supplier ABNs, GST status and bank details, then monitor a secure cloud supplier register.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
