@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import "./ui-refinements.css";
+import "./reference-redesign.css";
 
 export const metadata: Metadata = {
   title: "ABN Guard · Supplier Verification",

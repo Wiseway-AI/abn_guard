@@ -1782,10 +1782,10 @@ export default function Home() {
 
         <section className="landing-hero" id="top">
           <div className="landing-hero-copy">
-            <div className="landing-kicker"><span>✓</span> Built for Australian finance teams</div>
-            <h1>Every supplier.<br /><em>Verified.</em></h1>
-            <p>Turn contracts and invoices into verified supplier records. Check ABNs, GST status and bank details before money moves.</p>
-            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Join now — it’s free <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
+            <div className="landing-kicker"><span>✓</span> Australian supplier verification</div>
+            <h1>Know who you’re paying.<br /><em>Before money moves.</em></h1>
+            <p>Turn contracts and invoices into trusted supplier records. Check ABNs, GST status and bank details in one clear workflow.</p>
+            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Check suppliers free <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
             <div className="landing-trust"><span><b>✓</b> No credit card</span><span><b>✓</b> Set up in minutes</span><span><b>✓</b> Australian data</span></div>
           </div>
 
