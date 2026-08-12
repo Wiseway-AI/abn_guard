@@ -9,10 +9,12 @@ const LOCAL_D1_DATABASE_ID = "e3ebdcf9-db82-49ca-88f8-45ccc5217622";
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   const localBindingConfig = {
     main: "./worker/index.ts",
-    d1_databases: d1
+    // Wrangler already contributes the production D1 binding during builds.
+    // Only add this explicit binding for the local development server.
+    d1_databases: command === "serve" && d1
       ? [
           {
             binding: d1,
