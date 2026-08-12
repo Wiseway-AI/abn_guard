@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     authenticated: true,
     googleConfigured: true,
     googleClientId,
-    user: { id: session.user.id, email: session.user.email, name: session.user.name, picture: session.user.picture },
+    user: { id: session.user.id, email: session.user.email, name: session.user.name, picture: session.user.picture, authProvider: session.user.auth_provider },
     workspace: publicWorkspace(session.workspace, registerUsage(state)),
   });
 }

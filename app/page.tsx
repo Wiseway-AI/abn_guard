@@ -69,7 +69,7 @@ type Account = {
   setupComplete: boolean;
   ownAbn: string;
   companyRecord?: AbnRecord;
-  authProvider?: "local" | "managed" | "google";
+  authProvider?: "local" | "managed" | "google" | "email";
   workspaceId?: string;
   picture?: string;
   plan?: BillingPlan;
@@ -77,6 +77,10 @@ type Account = {
   subscriptionStatus?: string;
   abnLimit?: number;
 };
+
+function isCloudAccount(account?: Account | null) {
+  return account?.authProvider === "google" || account?.authProvider === "email";
+}
 
 type CloudWorkspaceState = {
   account?: Partial<Account>;
@@ -415,11 +419,6 @@ function compareRecord(previous: AbnRecord, current: AbnRecord, trigger: Monitor
   return changes;
 }
 
-async function hashPassword(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 async function readContract(file: File) {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "pdf") {
@@ -541,7 +540,11 @@ export default function Home() {
   const [authCompany, setAuthCompany] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [authCode, setAuthCode] = useState("");
+  const [authStage, setAuthStage] = useState<"credentials" | "verify">("credentials");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [showAuth, setShowAuth] = useState(false);
   const [contactWebsite, setContactWebsite] = useState("");
   const [contactSubmitting, setContactSubmitting] = useState(false);
@@ -599,7 +602,7 @@ export default function Home() {
           authenticated?: boolean;
           googleConfigured?: boolean;
           googleClientId?: string;
-          user?: { id: string; email: string; name: string; picture: string };
+          user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" };
           workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
         };
         if (cancelled) return;
@@ -610,15 +613,15 @@ export default function Home() {
           const workspaceResult = await workspaceResponse.json() as { state?: CloudWorkspaceState };
           const savedAccount = workspaceResult.state?.account ?? {};
           const account: Account = {
-            id: `google-${session.user.id}`,
+            id: `cloud-${session.user.id}`,
             companyName: savedAccount.companyName || session.workspace.name || session.user.name,
             email: session.user.email,
-            passwordHash: "google-oauth",
+            passwordHash: "server-authenticated",
             createdAt: savedAccount.createdAt || new Date().toISOString(),
             setupComplete: Boolean(savedAccount.setupComplete),
             ownAbn: savedAccount.ownAbn || "",
             companyRecord: savedAccount.companyRecord,
-            authProvider: "google",
+            authProvider: session.user.authProvider === "email" ? "email" : "google",
             workspaceId: session.workspace.id,
             picture: session.user.picture,
             plan: session.workspace.plan,
@@ -657,7 +660,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!showAuth || !googleConfigured || !googleClientId) return;
+    if (!showAuth || authStage !== "credentials" || !googleConfigured || !googleClientId) return;
     let cancelled = false;
     const scriptId = "google-identity-services";
 
@@ -717,7 +720,7 @@ export default function Home() {
       cancelled = true;
       existing?.removeEventListener("load", renderGoogleButton);
     };
-  }, [authMode, googleClientId, googleConfigured, showAuth]);
+  }, [authMode, authStage, googleClientId, googleConfigured, showAuth]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -732,24 +735,24 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
+    if (!hydrated || !currentAccount || isCloudAccount(currentAccount)) return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "register"), JSON.stringify(register));
   }, [register, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
+    if (!hydrated || !currentAccount || isCloudAccount(currentAccount)) return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "changes"), JSON.stringify(changes));
   }, [changes, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
+    if (!hydrated || !currentAccount || isCloudAccount(currentAccount)) return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "history"), JSON.stringify(history));
   }, [history, currentAccount, hydrated]);
   useEffect(() => {
-    if (!hydrated || !currentAccount || currentAccount.authProvider === "google") return;
+    if (!hydrated || !currentAccount || isCloudAccount(currentAccount)) return;
     localStorage.setItem(accountStorageKey(currentAccount.id, "today"), JSON.stringify(todayReviews));
   }, [todayReviews, currentAccount, hydrated]);
 
   useEffect(() => {
-    if (!hydrated || !cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    if (!hydrated || !cloudWorkspaceReady || !isCloudAccount(currentAccount)) return;
     const timer = window.setTimeout(async () => {
       const response = await fetch("/api/workspace", {
         method: "PUT",
@@ -767,7 +770,7 @@ export default function Home() {
   }, [changes, cloudWorkspaceReady, currentAccount?.companyName, currentAccount?.companyRecord, currentAccount?.ownAbn, currentAccount?.setupComplete, history, hydrated, lastRefresh, register, schedule, todayReviews]);
 
   useEffect(() => {
-    if (!cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    if (!cloudWorkspaceReady || !isCloudAccount(currentAccount)) return;
     const pendingPlan = localStorage.getItem("abn-guard-pending-plan");
     if (pendingPlan !== "starter") return;
     localStorage.removeItem("abn-guard-pending-plan");
@@ -775,7 +778,7 @@ export default function Home() {
   }, [cloudWorkspaceReady, currentAccount?.authProvider]);
 
   useEffect(() => {
-    if (!cloudWorkspaceReady || currentAccount?.authProvider !== "google") return;
+    if (!cloudWorkspaceReady || !isCloudAccount(currentAccount)) return;
     const params = new URLSearchParams(window.location.search);
     const billingResult = params.get("billing");
     const checkoutSessionId = params.get("session_id");
@@ -1011,7 +1014,7 @@ export default function Home() {
 
   function persistAccounts(next: Account[]) {
     setAccounts(next);
-    localStorage.setItem(STORAGE.accounts, JSON.stringify(next.filter((account) => account.authProvider !== "google")));
+    localStorage.setItem(STORAGE.accounts, JSON.stringify(next.filter((account) => !isCloudAccount(account))));
   }
 
   function startGoogleSignIn() {
@@ -1030,10 +1033,10 @@ export default function Home() {
   }
 
   async function startCheckout(plan: Exclude<BillingPlan, "free">) {
-    if (!currentAccount || currentAccount.authProvider !== "google") {
+    if (!currentAccount || !isCloudAccount(currentAccount)) {
       setShowAuth(true);
       setAuthMode("signin");
-      setAuthError("Sign in with Google to choose a paid plan.");
+      setAuthError("Sign in to choose a paid plan.");
       return;
     }
     setBillingBusy(true);
@@ -1045,7 +1048,7 @@ export default function Home() {
       if (response.status === 401) {
         setShowAuth(true);
         setAuthMode("signin");
-        setAuthError("Your local session has expired. Sign in with Google again, then choose Starter.");
+        setAuthError("Your session has expired. Sign in again, then choose Starter.");
       }
       if (!response.ok || !result.url) throw new Error(result.error || "Checkout could not be started.");
       window.clearTimeout(timeout);
@@ -1072,7 +1075,7 @@ export default function Home() {
   }
 
   function availableAbnSlots() {
-    if (currentAccount?.authProvider !== "google") return Number.POSITIVE_INFINITY;
+    if (!isCloudAccount(currentAccount)) return Number.POSITIVE_INFINITY;
     return Math.max(0, (currentAccount.abnLimit ?? 30) - register.length);
   }
 
@@ -1085,6 +1088,7 @@ export default function Home() {
   async function submitAuth(event: FormEvent) {
     event.preventDefault();
     setAuthError("");
+    setAuthNotice("");
     const email = authEmail.trim().toLowerCase();
     if (authMode === "signin" && !email.includes("@")) {
       if (!authPassword) {
@@ -1128,46 +1132,82 @@ export default function Home() {
       }
       return;
     }
-    if (!email.includes("@") || authPassword.length < 6) {
-      setAuthError("Enter a valid work email and a password of at least 6 characters.");
+    if (!/^\S+@\S+\.\S+$/.test(email) || authPassword.length < 8) {
+      setAuthError("Enter a valid email and a password of at least 8 characters.");
       return;
     }
-    const passwordHash = await hashPassword(authPassword);
-    if (authMode === "register") {
-      if (!authCompany.trim()) {
-        setAuthError("Enter your company name.");
+    if (authMode === "register" && authCompany.trim().length < 2) {
+      setAuthError("Enter your company name.");
+      return;
+    }
+    setAuthSubmitting(true);
+    try {
+      const endpoint = authMode === "register" ? "/api/auth/email/register" : "/api/auth/email/signin";
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName: authCompany.trim(), email, password: authPassword }),
+      });
+      const result = await response.json() as { authenticated?: boolean; verificationRequired?: boolean; error?: string };
+      if (!response.ok) throw new Error(result.error || (authMode === "register" ? "Registration could not be started." : "Sign-in failed."));
+      if (authMode === "register" && result.verificationRequired) {
+        setAuthStage("verify");
+        setAuthCode("");
         return;
       }
-      if (accounts.some((account) => account.email === email)) {
-        setAuthError("An account already exists for this email.");
-        return;
-      }
-      const account: Account = {
-        id: crypto.randomUUID(),
-        companyName: authCompany.trim(),
-        email,
-        passwordHash,
-        createdAt: new Date().toISOString(),
-        setupComplete: false,
-        ownAbn: "",
-      };
-      persistAccounts([...accounts, account]);
-      localStorage.setItem(STORAGE.session, account.id);
-      setCurrentAccount(account);
-      setRegister([]);
-      setChecks([]);
-      setChanges([]);
-      setHistory([]);
+      window.location.assign("/");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Authentication is temporarily unavailable.");
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  async function verifyEmailRegistration(event: FormEvent) {
+    event.preventDefault();
+    setAuthError("");
+    setAuthNotice("");
+    const code = authCode.replace(/\D/g, "").slice(0, 6);
+    if (code.length !== 6) {
+      setAuthError("Enter the 6-digit code from your email.");
       return;
     }
-    const account = accounts.find((item) => item.email === email && item.passwordHash === passwordHash);
-    if (!account) {
-      setAuthError("Email or password is incorrect.");
-      return;
+    setAuthSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/email/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: authEmail.trim().toLowerCase(), code }),
+      });
+      const result = await response.json() as { authenticated?: boolean; error?: string };
+      if (!response.ok || !result.authenticated) throw new Error(result.error || "Email verification failed.");
+      window.location.assign("/");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Email verification failed.");
+    } finally {
+      setAuthSubmitting(false);
     }
-    localStorage.setItem(STORAGE.session, account.id);
-    setCurrentAccount(account);
-    loadAccountData(account.id);
+  }
+
+  async function resendVerificationCode() {
+    setAuthError("");
+    setAuthNotice("");
+    setAuthSubmitting(true);
+    try {
+      const response = await fetch("/api/auth/email/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyName: authCompany.trim(), email: authEmail.trim().toLowerCase(), password: authPassword }),
+      });
+      const result = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(result.error || "A new code could not be sent.");
+      setAuthCode("");
+      setAuthNotice("A new verification code has been sent.");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "A new code could not be sent.");
+    } finally {
+      setAuthSubmitting(false);
+    }
   }
 
   async function submitContact(event: FormEvent) {
@@ -1225,7 +1265,7 @@ export default function Home() {
   }
 
   function signOut() {
-    if (currentAccount?.authProvider === "google") void fetch("/api/auth/logout", { method: "POST" });
+    if (isCloudAccount(currentAccount)) void fetch("/api/auth/logout", { method: "POST" });
     localStorage.removeItem(STORAGE.session);
     setCurrentAccount(null);
     setRegister([]);
@@ -1237,6 +1277,9 @@ export default function Home() {
     setDocuments([]);
     setCloudWorkspaceReady(false);
     setAuthPassword("");
+    setAuthCode("");
+    setAuthNotice("");
+    setAuthStage("credentials");
     setAuthMode("signin");
   }
 
@@ -1765,7 +1808,10 @@ export default function Home() {
   if (!currentAccount) {
     const openAuth = (mode: "signin" | "register") => {
       setAuthMode(mode);
+      setAuthStage("credentials");
+      setAuthCode("");
       setAuthError("");
+      setAuthNotice("");
       setContactError("");
       setContactSubmitted(false);
       setContactWebsite("");
@@ -1821,7 +1867,7 @@ export default function Home() {
         <section className="landing-pricing" id="pricing">
           <div className="landing-pricing-heading"><p className="landing-label">SIMPLE MONTHLY PRICING</p><h2>Start free. Grow when<br />your register does.</h2><p>Every plan includes document checks, ABN and GST verification, bank-detail comparison and change monitoring.</p></div>
           <div className="pricing-grid">
-            <article><p>Free trial</p><h3><span>A$</span>0<small>/month</small></h3><b>Up to 30 ABN / bank-detail records</b><ul><li>Google sign-in</li><li>Supplier verification</li><li>ABN register and alerts</li></ul><button type="button" onClick={() => chooseLandingPlan("free")}>Join now <span>→</span></button></article>
+            <article><p>Free trial</p><h3><span>A$</span>0<small>/month</small></h3><b>Up to 30 ABN / bank-detail records</b><ul><li>Google or email sign-in</li><li>Supplier verification</li><li>ABN register and alerts</li></ul><button type="button" onClick={() => chooseLandingPlan("free")}>Join now <span>→</span></button></article>
             <article className="popular"><em>Most popular</em><p>Starter</p><h3><span>A$</span>9.90<small>/month</small></h3><b>Up to 500 ABN / bank-detail records</b><ul><li>Everything in Free trial</li><li>Larger supplier register</li><li>Stripe subscription management</li></ul><button type="button" onClick={() => chooseLandingPlan("starter")}>Choose Starter <span>→</span></button></article>
           </div>
           <small>Prices are in Australian dollars. Cancel or change plan through the secure Stripe billing portal.</small>
@@ -1838,14 +1884,33 @@ export default function Home() {
             <button className="auth-modal-close" type="button" aria-label="Close" onClick={() => setShowAuth(false)}>×</button>
             <div className="auth-modal-brand"><span>A</span><strong>ABN Guard</strong></div>
             <div className="auth-form">
-              <p className="eyebrow">{authMode === "register" ? "CREATE YOUR WORKSPACE" : "WELCOME BACK"}</p>
-              <h2 id="auth-title">{authMode === "register" ? "Start checking suppliers for free" : "Sign in to ABN Guard"}</h2>
-              <p>{authMode === "register" ? "Join with Google to create your private workspace. Your Google account becomes your secure ABN Guard sign-in." : "Use the same Google account you joined with to open your company’s supplier workspace."}</p>
-              {authMode === "register" && <div className="auth-plan-summary"><span>Free trial</span><b>Up to 30 ABN / bank-detail records</b><small>No credit card required</small></div>}
-              {googleConfigured ? <div className={googleSigningIn ? "google-auth-button-host busy" : "google-auth-button-host"} ref={googleButtonRef}>{googleSigningIn && <span>Signing you in…</span>}</div> : <button className="google-auth-button" type="button" disabled><span className="google-mark">G</span>{authMode === "register" ? "Join with Google" : "Sign in with Google"}</button>}
-              {authError && <div className="auth-error">{authError}</div>}
-              {authMode === "signin" && <><div className="auth-divider"><span>Beta accounts</span></div><form className="legacy-auth-form" onSubmit={(event) => void submitAuth(event)}><label>Username<input type="text" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="Beta username" autoComplete="username" /></label><label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Password" autoComplete="current-password" /></label><button className="secondary-button legacy-signin" type="submit">Sign in with beta account</button></form></>}
-              <div className="auth-switch">{authMode === "register" ? "Already have an account?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthError(""); }}>{authMode === "register" ? "Sign in" : "Join now"}</button></div>
+              {authStage === "verify" ? <>
+                <p className="eyebrow">EMAIL VERIFICATION</p>
+                <h2 id="auth-title">Check your inbox</h2>
+                <p>We sent a 6-digit verification code to <b>{authEmail.trim().toLowerCase()}</b>. Enter it below to create your workspace.</p>
+                <form className="email-auth-form verification-form" onSubmit={(event) => void verifyEmailRegistration(event)}>
+                  <label>Verification code<input className="verification-code-input" inputMode="numeric" autoComplete="one-time-code" value={authCode} onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="000000" autoFocus /></label>
+                  <button className="primary-button" type="submit" disabled={authSubmitting}>{authSubmitting ? "Verifying…" : "Verify email & continue"}<span>→</span></button>
+                </form>
+                {authError && <div className="auth-error">{authError}</div>}
+                {authNotice && <div className="auth-notice">{authNotice}</div>}
+                <div className="verification-actions"><button type="button" disabled={authSubmitting} onClick={() => void resendVerificationCode()}>Resend code</button><button type="button" onClick={() => { setAuthStage("credentials"); setAuthCode(""); setAuthError(""); setAuthNotice(""); }}>Change email</button></div>
+              </> : <>
+                <p className="eyebrow">{authMode === "register" ? "CREATE YOUR WORKSPACE" : "WELCOME BACK"}</p>
+                <h2 id="auth-title">{authMode === "register" ? "Start checking suppliers for free" : "Sign in to ABN Guard"}</h2>
+                <p>{authMode === "register" ? "Create your company workspace with Google or your work email." : "Continue with Google or sign in using your email and password."}</p>
+                {authMode === "register" && <div className="auth-plan-summary"><span>Free trial</span><b>Up to 30 ABN / bank-detail records</b><small>No credit card required</small></div>}
+                {googleConfigured ? <div className={googleSigningIn ? "google-auth-button-host busy" : "google-auth-button-host"} ref={googleButtonRef}>{googleSigningIn && <span>Signing you in…</span>}</div> : <button className="google-auth-button" type="button" disabled><span className="google-mark">G</span>{authMode === "register" ? "Join with Google" : "Sign in with Google"}</button>}
+                <div className="auth-divider"><span>or use email</span></div>
+                <form className="email-auth-form" onSubmit={(event) => void submitAuth(event)}>
+                  {authMode === "register" && <label>Company name<input type="text" value={authCompany} onChange={(event) => setAuthCompany(event.target.value)} placeholder="Example Pty Ltd" autoComplete="organization" /></label>}
+                  <label>{authMode === "signin" ? "Email or beta username" : "Work email"}<input type={authMode === "signin" ? "text" : "email"} value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === "signin" ? "you@company.com" : "you@company.com"} autoComplete="username" /></label>
+                  <label>Password<input type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder={authMode === "register" ? "At least 8 characters" : "Your password"} autoComplete={authMode === "register" ? "new-password" : "current-password"} /></label>
+                  <button className="primary-button email-auth-submit" type="submit" disabled={authSubmitting}>{authSubmitting ? authMode === "register" ? "Sending code…" : "Signing in…" : authMode === "register" ? "Create account with email" : "Sign in"}<span>→</span></button>
+                </form>
+                {authError && <div className="auth-error">{authError}</div>}
+                <div className="auth-switch">{authMode === "register" ? "Already have an account?" : "New to ABN Guard?"}<button type="button" onClick={() => { setAuthMode(authMode === "register" ? "signin" : "register"); setAuthStage("credentials"); setAuthError(""); setAuthNotice(""); }}>{authMode === "register" ? "Sign in" : "Join now"}</button></div>
+              </>}
             </div>
           </section>
         </div>}
@@ -1891,7 +1956,7 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">A</span><div><strong>ABN Guard</strong><small>Supplier verification</small></div></div>
         <nav><p className="nav-title">Workspace</p>{nav.map((item) => <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => navigateTo(item.id)}><span>{item.icon}</span><div><b>{item.label}</b><small>{item.hint}</small></div></button>)}</nav>
         <div className="sidebar-bottom">
-          {currentAccount.authProvider === "google" && <div className="sidebar-plan"><div><b>{currentAccount.planName || "Free"}</b><span>{register.length} / {currentAccount.abnLimit ?? 30} records</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i><button type="button" disabled={billingBusy} onClick={() => void (currentAccount.plan === "starter" ? openBillingPortal() : startCheckout("starter"))}>{billingBusy ? "Opening Stripe…" : currentAccount.plan === "starter" ? "Manage plan" : "Upgrade now"}</button></div>}
+          {isCloudAccount(currentAccount) && <div className="sidebar-plan"><div><b>{currentAccount.planName || "Free"}</b><span>{register.length} / {currentAccount.abnLimit ?? 30} records</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i><button type="button" disabled={billingBusy} onClick={() => void (currentAccount.plan === "starter" ? openBillingPortal() : startCheckout("starter"))}>{billingBusy ? "Opening Stripe…" : currentAccount.plan === "starter" ? "Manage plan" : "Upgrade now"}</button></div>}
           <button className={tab === "settings" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")}><span>⚙</span><div><b>Connection</b><small>{apiConfigured ? "Official API" : "Demo mode"}</small></div></button>
           <div className="account-card">{currentAccount.picture ? <img src={currentAccount.picture} alt="" referrerPolicy="no-referrer" /> : <span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span>}<div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button onClick={signOut} aria-label="Sign out">↗</button></div>
         </div>
@@ -1902,7 +1967,7 @@ export default function Home() {
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
-          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{currentAccount.authProvider === "google" && <em> / {currentAccount.abnLimit ?? 30}</em>}</strong><small>{currentAccount.authProvider === "google" ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
+          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{isCloudAccount(currentAccount) && <em> / {currentAccount.abnLimit ?? 30}</em>}</strong><small>{isCloudAccount(currentAccount) ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>

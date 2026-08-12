@@ -244,6 +244,18 @@ tbody tr:hover td { background: #f8faff; }
 .auth-modal-close { border-color: #dbe2ec; }
 .auth-plan-summary { border-color: #c8d7f7; background: #edf3ff; }
 .auth-plan-summary span { color: #1746d1; }
+.email-auth-form { display: grid; gap: 14px; }
+.email-auth-form label { display: grid; gap: 7px; color: #213650; font-size: 13px; font-weight: 750; }
+.email-auth-form input { width: 100%; min-height: 48px; padding: 0 13px; border: 1px solid #d5deea; border-radius: 11px; background: #fbfcff; color: #071b33; font-size: 15px; }
+.email-auth-form input:focus { border-color: #2454e6; background: #fff; box-shadow: 0 0 0 4px rgba(36,84,230,.1); outline: 0; }
+.email-auth-submit { margin-top: 3px; }
+.verification-form { margin-top: 24px; }
+.verification-code-input { height: 62px; text-align: center; font-size: 28px !important; font-weight: 850; letter-spacing: .32em; font-variant-numeric: tabular-nums; }
+.verification-actions { margin-top: 18px; display: flex; align-items: center; justify-content: center; gap: 18px; }
+.verification-actions button { padding: 0; border: 0; background: transparent; color: #1746d1; cursor: pointer; font-size: 13px; font-weight: 800; }
+.verification-actions button:disabled { opacity: .55; cursor: wait; }
+.auth-error { border-color: #efb8b0; border-radius: 10px; background: #fff2f0; }
+.auth-notice { padding: 11px 13px; border: 1px solid #b9dfcb; border-radius: 10px; background: #effaf4; color: #17633c; font-size: 13px; font-weight: 700; }
 
 @media (max-width: 1100px) {
   .landing-hero { grid-template-columns: 1fr; }

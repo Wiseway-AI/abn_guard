@@ -7,7 +7,7 @@ type D1Statement = {
   run<T = Record<string, unknown>>(): Promise<D1Result<T>>;
   all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
 };
-type D1DatabaseLike = { prepare(query: string): D1Statement };
+type D1DatabaseLike = { prepare(query: string): D1Statement; batch(statements: D1Statement[]): Promise<D1Result[]> };
 
 export type WorkspaceRow = {
   id: string;
@@ -26,7 +26,21 @@ export type UserRow = {
   email: string;
   name: string;
   picture: string;
+  auth_provider: "google" | "email";
+  password_hash: string | null;
+  email_verified_at: string | null;
   stripe_customer_id: string | null;
+};
+
+export type EmailRegistrationRow = {
+  email: string;
+  company_name: string;
+  password_hash: string;
+  code_hash: string;
+  expires_at: number;
+  attempts: number;
+  last_sent_at: number;
+  created_at: string;
 };
 
 export async function database() {
@@ -39,22 +53,29 @@ export async function database() {
 export async function upsertGoogleUser(profile: { id: string; email: string; name: string; picture: string }) {
   const db = await database();
   const now = new Date().toISOString();
-  await db.prepare(`INSERT INTO users (id, email, name, picture, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET email = excluded.email, name = excluded.name, picture = excluded.picture, updated_at = excluded.updated_at`)
-    .bind(profile.id, profile.email, profile.name, profile.picture, now, now).run();
-  const existing = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(profile.id).first<WorkspaceRow>();
+  const matchingEmail = await db.prepare("SELECT id, password_hash FROM users WHERE email = ?").bind(profile.email).first<{ id: string; password_hash: string | null }>();
+  const userId = matchingEmail?.id || profile.id;
+  if (matchingEmail) {
+    await db.prepare("UPDATE users SET name = ?, picture = ?, email_verified_at = COALESCE(email_verified_at, ?), updated_at = ? WHERE id = ?")
+      .bind(profile.name, profile.picture, now, now, userId).run();
+  } else {
+    await db.prepare(`INSERT INTO users (id, email, name, picture, auth_provider, email_verified_at, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'google', ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET email = excluded.email, name = excluded.name, picture = excluded.picture, email_verified_at = excluded.email_verified_at, updated_at = excluded.updated_at`)
+      .bind(userId, profile.email, profile.name, profile.picture, now, now, now).run();
+  }
+  const existing = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(userId).first<WorkspaceRow>();
   if (!existing) {
     await db.prepare(`INSERT INTO workspaces (id, owner_user_id, name, plan, subscription_status, state_json, created_at, updated_at)
       VALUES (?, ?, ?, 'free', 'free', '{}', ?, ?)`)
-      .bind(crypto.randomUUID(), profile.id, profile.name ? `${profile.name}'s workspace` : "My workspace", now, now).run();
+      .bind(crypto.randomUUID(), userId, profile.name ? `${profile.name}'s workspace` : "My workspace", now, now).run();
   }
-  return getUserWorkspace(profile.id);
+  return getUserWorkspace(userId);
 }
 
 export async function getUserWorkspace(userId: string) {
   const db = await database();
-  const user = await db.prepare("SELECT id, email, name, picture, stripe_customer_id FROM users WHERE id = ?").bind(userId).first<UserRow>();
+  const user = await db.prepare("SELECT id, email, name, picture, auth_provider, password_hash, email_verified_at, stripe_customer_id FROM users WHERE id = ?").bind(userId).first<UserRow>();
   const workspace = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(userId).first<WorkspaceRow>();
   return user && workspace ? { user, workspace } : null;
 }

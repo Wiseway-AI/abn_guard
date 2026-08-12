@@ -17,14 +17,15 @@ export async function POST(request: Request) {
       return Response.json({ error: "Google did not return a sign-in credential." }, { status: 400 });
     }
     const profile = await verifyGoogleIdToken(body.credential, clientId);
-    await upsertGoogleUser({
+    const account = await upsertGoogleUser({
       id: profile.sub!,
       email: profile.email!.toLowerCase(),
       name: profile.name?.trim() || profile.email!.split("@")[0],
       picture: profile.picture ?? "",
     });
     const headers = new Headers({ "Content-Type": "application/json" });
-    headers.append("Set-Cookie", await createSessionCookie(profile.sub!, request));
+    if (!account) throw new Error("Your ABN Guard workspace could not be created.");
+    headers.append("Set-Cookie", await createSessionCookie(account.user.id, request));
     return new Response(JSON.stringify({ authenticated: true }), { status: 200, headers });
   } catch (error) {
     return Response.json(

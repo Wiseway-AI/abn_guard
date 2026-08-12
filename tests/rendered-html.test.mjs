@@ -59,7 +59,7 @@ test("keeps service credentials on the server", async () => {
   assert.doesNotMatch(page, /BOW_PASSWORD|GCGF_PASSWORD/);
 });
 
-test("presents Google as the account-bound join and sign-in method", async () => {
+test("presents Google and verified email as account-bound sign-in methods", async () => {
   const [page, credential, verifier, database] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),
@@ -70,6 +70,8 @@ test("presents Google as the account-bound join and sign-in method", async () =>
   assert.match(page, /Join now/);
   assert.match(page, /Join with Google/);
   assert.match(page, /Sign in with Google/);
+  assert.match(page, /Google or email sign-in/);
+  assert.match(page, /Create account with email/);
   assert.match(page, /Up to 30 ABN \/ bank-detail records/);
   assert.match(page, /Up to 500 ABN \/ bank-detail records/);
   assert.match(credential, /upsertGoogleUser/);
