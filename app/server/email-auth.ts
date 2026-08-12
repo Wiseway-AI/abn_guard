@@ -72,8 +72,7 @@ export async function sendVerificationEmail(email: string, companyName: string, 
     }),
   });
   if (!response.ok) {
-    const result = await response.json().catch(() => ({})) as { message?: string };
-    throw new Error(result.message || "Verification email could not be sent.");
+    throw new Error("Email verification is being activated. Please try again shortly.");
   }
 }
 
