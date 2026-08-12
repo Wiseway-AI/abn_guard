@@ -60,11 +60,12 @@ test("keeps service credentials on the server", async () => {
 });
 
 test("presents Google and verified email as account-bound sign-in methods", async () => {
-  const [page, credential, verifier, database] = await Promise.all([
+  const [page, credential, verifier, database, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/google-identity.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/database.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /Join now/);
@@ -84,6 +85,8 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(verifier, /audience\.includes\(clientId\)/);
   assert.match(database, /WHERE owner_user_id = \?/);
   assert.match(database, /INSERT INTO workspaces/);
+  assert.match(styles, /\.google-auth-button-host\.busy\s*>\s*div\s*\{\s*display:\s*none\s*!important/);
+  assert.match(styles, /\.google-auth-button-host\.busy\s*>\s*span[\s\S]*text-overflow:\s*ellipsis/);
 });
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {

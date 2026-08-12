@@ -1068,9 +1068,12 @@ td small { font-size: 12px; }
 .google-auth-button { width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; gap: 12px; border: 1px solid #cfd6d1; border-radius: 9px; background: white; color: #24362f; cursor: pointer; font-size: 13px; font-weight: 800; box-shadow: 0 3px 9px rgba(26,55,43,.04); }
 .google-auth-button:hover { border-color: #8da99c; box-shadow: 0 6px 16px rgba(26,55,43,.08); }
 .google-auth-button:disabled { cursor: not-allowed; opacity: .6; }
-.google-auth-button-host { width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; }
-.google-auth-button-host > div { width: 100% !important; display: flex; justify-content: center; }
+.google-auth-button-host { width: 100%; min-width: 0; max-width: 100%; min-height: 52px; margin-top: 22px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.google-auth-button-host > div { width: 100% !important; max-width: 100% !important; display: flex; justify-content: center; overflow: hidden; }
+.google-auth-button-host iframe { max-width: 100% !important; }
 .google-auth-button-host.busy { border: 1px solid #cfd6d1; border-radius: 9px; background: white; color: #52625b; font-size: 13px; font-weight: 800; }
+.google-auth-button-host.busy > div { display: none !important; }
+.google-auth-button-host.busy > span { display: block; max-width: 100%; padding: 0 16px; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .google-mark { width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: conic-gradient(from -45deg, #4285f4 0 25%, #34a853 0 50%, #fbbc05 0 75%, #ea4335 0); color: white; font-weight: 900; }
 .auth-divider { margin: 24px 0 19px; display: flex; align-items: center; gap: 12px; color: #8a948f; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .auth-divider::before, .auth-divider::after { content: ""; height: 1px; flex: 1; background: #dfe3df; }
