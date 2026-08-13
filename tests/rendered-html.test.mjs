@@ -89,11 +89,12 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(styles, /\.google-auth-button-host\.busy\s*>\s*span[\s\S]*text-overflow:\s*ellipsis/);
   assert.match(styles, /\/\* Mobile experience \*\/[\s\S]*max-height:\s*min\(92dvh,\s*820px\)/);
   assert.match(styles, /\.toolbar-actions\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
-  assert.match(page, /mobile-only-nav/);
   assert.match(page, />Settings<\/b>/);
-  assert.equal((page.match(/mobile-only-nav/g) ?? []).length, 2);
+  assert.doesNotMatch(page, /mobile-only-nav/);
   assert.doesNotMatch(page, /<small>Stripe billing<\/small>/);
   assert.doesNotMatch(page, />Sign out<\/b>/);
+  assert.match(styles, /\.sidebar-bottom\s*\{\s*display:\s*block;\s*padding-top:\s*6px/);
+  assert.match(styles, /\.sidebar-bottom\s+\.sidebar-plan,\s*\.sidebar-bottom\s+\.account-card\s*\{\s*display:\s*none/);
 });
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
