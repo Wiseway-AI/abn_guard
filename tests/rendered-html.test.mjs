@@ -91,7 +91,9 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(styles, /\.toolbar-actions\s*\{\s*display:\s*grid;\s*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
   assert.match(page, /mobile-only-nav/);
   assert.match(page, />Settings<\/b>/);
-  assert.match(page, />Sign out<\/b>/);
+  assert.equal((page.match(/mobile-only-nav/g) ?? []).length, 2);
+  assert.doesNotMatch(page, /<small>Stripe billing<\/small>/);
+  assert.doesNotMatch(page, />Sign out<\/b>/);
 });
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
