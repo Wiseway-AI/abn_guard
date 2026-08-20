@@ -1,3 +1,7 @@
+import { consumeRateLimit } from "../../server/database.ts";
+import { recordRouteError } from "../../server/monitoring.ts";
+import { managedSessionFromRequest, sessionFromRequest } from "../../server/session.ts";
+
 const DEMO: Record<string, Record<string, unknown>> = {
   "53004085616": {
     abn: "53004085616",
@@ -86,6 +90,19 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    const cloudSession = await sessionFromRequest(request);
+    const managedSession = cloudSession ? null : await managedSessionFromRequest(request);
+    if (!cloudSession && !managedSession) {
+      return Response.json({ error: "Sign in to run an ABN lookup." }, { status: 401 });
+    }
+    const actorKey = cloudSession ? `workspace:${cloudSession.workspace.id}` : `managed:${managedSession!.managedAccountId}`;
+    const rateLimit = await consumeRateLimit("abn_lookup", actorKey, 240, 60 * 60);
+    if (!rateLimit.allowed) {
+      return Response.json(
+        { error: "Too many ABN lookups. Please wait before trying again." },
+        { status: 429, headers: { "Retry-After": String(Math.max(1, rateLimit.resetAt - Math.floor(Date.now() / 1000))) } },
+      );
+    }
     const body = (await request.json()) as { abn?: string };
     const abn = clean(body.abn).replace(/\D/g, "");
     const guid = clean(process.env.ABN_LOOKUP_GUID);
@@ -161,6 +178,7 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    await recordRouteError(request, "abn_lookup_error", error);
     return Response.json({ error: error instanceof Error ? error.message : "ABN lookup failed" }, { status: 500 });
   }
 }

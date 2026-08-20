@@ -1,4 +1,5 @@
 import { isPlanKey, priceIdForPlan } from "../../../server/plans";
+import { recordRouteError } from "../../../server/monitoring";
 import { absoluteAppUrl, sessionFromRequest } from "../../../server/session";
 import { stripeRequest } from "../../../server/stripe";
 
@@ -18,9 +19,11 @@ export async function POST(request: Request) {
       mode: "subscription",
       "line_items[0][price]": priceId,
       "line_items[0][quantity]": "1",
-      success_url: `${appUrl}/?billing=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/?billing=cancelled`,
+      success_url: `${appUrl}/app/settings?billing=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${appUrl}/app/settings?billing=cancelled`,
       allow_promotion_codes: "true",
+      billing_address_collection: "required",
+      "automatic_tax[enabled]": "true",
       "subscription_data[metadata][workspace_id]": session.workspace.id,
       "metadata[workspace_id]": session.workspace.id,
       "metadata[plan]": body.plan,
@@ -30,6 +33,7 @@ export async function POST(request: Request) {
     const checkout = await stripeRequest("checkout/sessions", checkoutParams);
     return Response.json({ url: checkout.url });
   } catch (error) {
+    await recordRouteError(request, "stripe_checkout_error", error);
     return Response.json({ error: error instanceof Error ? error.message : "Checkout could not be started." }, { status: 400 });
   }
 }

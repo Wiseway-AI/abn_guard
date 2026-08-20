@@ -1,11 +1,16 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { classifyAbnRoles, type AbnRoleCandidate } from "./abn-role";
+import { SignInButton, SignUpButton, useAuth, useClerk } from "@clerk/nextjs";
+import type { PDFDocumentProxy } from "pdfjs-dist";
+import Link from "next/link";
+import { classifyAbnRoles, selectAbnsForVerification, type AbnRoleCandidate } from "./abn-role";
 import { accountFileKey, accountStorageKey } from "./account-scope";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
+import { assessPdfText, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_IMAGE_EDGE, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
+import FeedbackDialog from "./components/FeedbackDialog";
 
 declare global {
   interface Window {
@@ -21,6 +26,18 @@ declare global {
 }
 
 type Tab = "verify" | "today" | "register" | "changes" | "settings";
+const TAB_PATHS: Record<Tab, string> = {
+  verify: "/app/check",
+  today: "/app/review",
+  register: "/app/records",
+  changes: "/app/alerts",
+  settings: "/app/settings",
+};
+
+function tabFromPathname(pathname: string): Tab {
+  const match = (Object.entries(TAB_PATHS) as [Tab, string][]).find(([, path]) => pathname === path);
+  return match?.[0] ?? "verify";
+}
 type Source = "official" | "demo" | "pending";
 type RegisterFilter = "all" | "attention" | "active" | "cancelled" | "gst-registered" | "gst-not-registered";
 type BillingPlan = "free" | "starter";
@@ -69,17 +86,18 @@ type Account = {
   setupComplete: boolean;
   ownAbn: string;
   companyRecord?: AbnRecord;
-  authProvider?: "local" | "managed" | "google" | "email";
+  authProvider?: "local" | "managed" | "google" | "email" | "clerk";
   workspaceId?: string;
   picture?: string;
   plan?: BillingPlan;
   planName?: string;
   subscriptionStatus?: string;
   abnLimit?: number;
+  unlimitedAbns?: boolean;
 };
 
 function isCloudAccount(account?: Account | null) {
-  return account?.authProvider === "google" || account?.authProvider === "email";
+  return account?.authProvider === "google" || account?.authProvider === "email" || account?.authProvider === "clerk";
 }
 
 type CloudWorkspaceState = {
@@ -101,6 +119,9 @@ type ContractDocument = {
   abnRoles: AbnRoleCandidate[];
   selectedPayeeAbns: string[];
   payeeSelection: "automatic" | "manual" | "unresolved";
+  processing: "browser" | "vlm";
+  processingWarnings: string[];
+  requiresManualReview: boolean;
   uploadedAt: string;
 };
 
@@ -419,7 +440,47 @@ function compareRecord(previous: AbnRecord, current: AbnRecord, trigger: Monitor
   return changes;
 }
 
-async function readContract(file: File) {
+type ContractReadResult = {
+  text: string;
+  processing: "browser" | "vlm";
+  warnings: string[];
+  requiresManualReview: boolean;
+};
+
+async function extractWithVlm(file: File, pdf: PDFDocumentProxy, pageTexts: string[]) {
+  const pages = [] as { pageNumber: number; mimeType: "image/jpeg"; data: string }[];
+  for (const pageNumber of selectVlmPageNumbers(pdf.numPages)) {
+    const page = await pdf.getPage(pageNumber);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(2, VLM_MAX_IMAGE_EDGE / Math.max(baseViewport.width, baseViewport.height));
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const canvasContext = canvas.getContext("2d", { alpha: false });
+    if (!canvasContext) throw new Error("This browser cannot render PDF pages for VLM extraction.");
+    canvasContext.fillStyle = "#ffffff";
+    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvas, canvasContext, viewport }).promise;
+    pages.push({
+      pageNumber,
+      mimeType: "image/jpeg",
+      data: canvas.toDataURL("image/jpeg", 0.82).replace(/^data:image\/jpeg;base64,/, ""),
+    });
+    canvas.width = 1;
+    canvas.height = 1;
+  }
+  const response = await fetch("/api/vlm/extract", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName: file.name, existingText: pageTexts.join("\n"), pages }),
+  });
+  const result = await response.json() as { extraction?: unknown; error?: string };
+  if (!response.ok) throw new Error(result.error || "VLM document extraction failed.");
+  return normalizeVlmExtraction(result.extraction);
+}
+
+async function readContract(file: File, vlmEnabled: boolean): Promise<ContractReadResult> {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "pdf") {
     const pdfjs = await import("pdfjs-dist");
@@ -431,14 +492,37 @@ async function readContract(file: File) {
       const content = await page.getTextContent();
       pages.push(pdfTextRows(content.items.filter((item) => "str" in item) as { str: string; transform: number[] }[]));
     }
-    return pages.join("\n");
+    const localText = pages.join("\n");
+    const assessment = assessPdfText(pages);
+    if (!assessment.needsVlm) return { text: localText, processing: "browser", warnings: [], requiresManualReview: false };
+    if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: true };
+    try {
+      const extraction: VlmDocumentExtraction = await extractWithVlm(file, pdf, pages);
+      const vlmText = vlmExtractionToText(extraction);
+      if (!vlmText) throw new Error("The VLM returned no usable fields.");
+      return {
+        text: [localText, vlmText].filter(Boolean).join("\n\n"),
+        processing: "vlm",
+        warnings: [...assessment.reasons, ...extraction.warnings],
+        requiresManualReview: extraction.confidence < 0.8
+          || extraction.entities.some((entity) => entity.confidence < 0.75 || entity.role === "unknown")
+          || extraction.warnings.length > 0,
+      };
+    } catch (error) {
+      return {
+        text: localText,
+        processing: "browser",
+        warnings: [...assessment.reasons, error instanceof Error ? error.message : "VLM fallback failed."],
+        requiresManualReview: true,
+      };
+    }
   }
   if (extension === "docx") {
     const mammoth = await import("mammoth");
     const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
-    return result.value;
+    return { text: result.value, processing: "browser", warnings: [], requiresManualReview: false };
   }
-  return file.text();
+  return { text: await file.text(), processing: "browser", warnings: [], requiresManualReview: false };
 }
 
 async function lookupAbn(abn: string): Promise<AbnRecord> {
@@ -478,7 +562,7 @@ function BankVerification({ check, onSelectCandidate }: { check: ContractCheck; 
   const candidates = check.fileBankDetailCandidates ?? [];
   const isMultiple = check.bankDetailStatus === "multiple";
   return <div className={`bank-verification ${check.bankDetailStatus}`}>
-    <div className="bank-verification-head"><div><span>BANK</span><b>{isMultiple ? "Multiple bank accounts found" : check.bankDetailStatus === "first-seen" ? "Confirm new bank details" : "Bank details changed"}</b></div><em>{isMultiple ? `${candidates.length} accounts` : check.bankDetailStatus === "first-seen" ? "First record" : "Mismatch"}</em></div>
+    <div className="bank-verification-head"><div><span>BANK</span><b>{isMultiple ? "Multiple bank accounts found" : check.bankDetailStatus === "first-seen" ? "Confirm new bank details" : "Bank details changed"}</b></div><div className="bank-verification-status">{check.bankDetailStatus === "first-seen" && <button className="bank-risk-help" type="button" aria-label="Important first bank record verification guidance"><span aria-hidden="true">!</span><span className="bank-risk-tooltip" role="tooltip"><strong>Verify directly with the payee</strong>Use a trusted phone number or contact you already know to confirm the account name, BSB and account number. Do not rely only on the uploaded document or reply to unexpected bank-change instructions.</span></button>}<em>{isMultiple ? `${candidates.length} accounts` : check.bankDetailStatus === "first-seen" ? "First record" : "Mismatch"}</em></div></div>
     {isMultiple ? <div className="bank-candidate-list">{candidates.map((candidate) => {
       const candidateKey = bankDetailsKey(candidate.details);
       const selected = check.selectedBankDetailKey === candidateKey;
@@ -490,7 +574,7 @@ function BankVerification({ check, onSelectCandidate }: { check: ContractCheck; 
       <section className="bank-panel"><h4>Uploaded file</h4><BankDetailsFields details={check.fileBankDetails} empty="No bank details found" /></section>
       <section className="bank-panel"><h4>Saved record</h4><BankDetailsFields details={check.savedBankDetails} /></section>
     </div>}
-    <p className={check.bankDetailStatus === "first-seen" ? "bank-confirmation" : check.selectedBankDetailKey ? "bank-confirmation" : "bank-confirmation danger"}>{isMultiple ? check.selectedBankDetailKey ? "The selected account will be saved to Records after you tick Reviewed and complete this batch." : "Choose the correct payment account before completing this batch. Only the selected account will be saved to Records." : check.bankDetailStatus === "first-seen" ? "Confirm the BSB and account number against the original file, then tick Reviewed." : "Confirm this payment-detail change before ticking Reviewed. Approval will replace the saved account."}</p>
+    <p className={check.bankDetailStatus === "first-seen" ? "bank-confirmation" : check.selectedBankDetailKey ? "bank-confirmation" : "bank-confirmation danger"}>{isMultiple ? check.selectedBankDetailKey ? "The selected account will be saved to Records after you tick Reviewed and complete this batch." : "Choose the correct payment account before completing this batch. Only the selected account will be saved to Records." : check.bankDetailStatus === "first-seen" ? "Before saving this bank account for the first time, independently confirm the account name, BSB and account number directly with the payee using a trusted contact method. Do not rely only on the uploaded document. Then tick Reviewed." : "Confirm this payment-detail change before ticking Reviewed. Approval will replace the saved account."}</p>
   </div>;
 }
 
@@ -498,8 +582,12 @@ function bankSelectionMissing(check: ContractCheck) {
   return check.bankDetailStatus === "multiple" && !check.selectedBankDetailKey;
 }
 
+function checkRequiresReview(check: ContractCheck) {
+  return check.issues.length > 0 || check.official.gstRegistered === false;
+}
+
 function checkIsVerified(check: ContractCheck) {
-  return !bankSelectionMissing(check) && (check.issues.length === 0 || check.reviewed);
+  return !bankSelectionMissing(check) && (!checkRequiresReview(check) || check.reviewed);
 }
 
 function isEntityNameIssue(issue: string) {
@@ -508,14 +596,14 @@ function isEntityNameIssue(issue: string) {
 
 function isBankDetailIssue(issue: string) {
   return issue === "Multiple different bank details were found across the uploaded files for this ABN."
-    || issue === "First bank details found for this ABN. Confirm the BSB and account number before saving."
+    || issue === "First bank details found for this ABN. Independently confirm the account name, BSB and account number directly with the payee before saving."
     || issue === "Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.";
 }
 
-function TodaySection({ title, subtitle, items, onVerify, onOpenFile }: { title: string; subtitle: string; items: TodayReview[]; onVerify?: (id: string) => void; onOpenFile: (file: TodayFileRef) => void }) {
+function TodaySection({ title, items, onVerify, onOpenFile }: { title: string; items: TodayReview[]; onVerify?: (id: string) => void; onOpenFile: (file: TodayFileRef) => void }) {
   return <section className="panel today-section">
     <div className="today-section-heading">
-      <div><h2>{title}</h2><p>{subtitle}</p></div>
+      <h2>{title}</h2>
       <span>{items.length}</span>
     </div>
     {!items.length ? <div className="today-empty">No items in this section.</div> : <div className="table-wrap today-table"><table>
@@ -534,6 +622,8 @@ function TodaySection({ title, subtitle, items, onVerify, onOpenFile }: { title:
 }
 
 export default function Home() {
+  const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn } = useAuth();
+  const { signOut: clerkSignOut } = useClerk();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [currentAccount, setCurrentAccount] = useState<Account | null>(null);
   const [authMode, setAuthMode] = useState<"signin" | "register">("register");
@@ -546,15 +636,12 @@ export default function Home() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [showAuth, setShowAuth] = useState(false);
-  const [contactWebsite, setContactWebsite] = useState("");
-  const [contactSubmitting, setContactSubmitting] = useState(false);
-  const [contactSubmitted, setContactSubmitted] = useState(false);
-  const [contactError, setContactError] = useState("");
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [setupAbn, setSetupAbn] = useState("");
   const [setupRecord, setSetupRecord] = useState<AbnRecord | null>(null);
   const [setupError, setSetupError] = useState("");
 
-  const [tab, setTab] = useState<Tab>("verify");
+  const [tab, setTab] = useState<Tab>(() => typeof window === "undefined" ? "verify" : tabFromPathname(window.location.pathname));
   const [documents, setDocuments] = useState<ContractDocument[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
@@ -592,6 +679,8 @@ export default function Home() {
   const googleButtonRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!clerkLoaded) return;
+    setHydrated(false);
     let cancelled = false;
     async function hydrate() {
       const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
@@ -602,7 +691,7 @@ export default function Home() {
           authenticated?: boolean;
           googleConfigured?: boolean;
           googleClientId?: string;
-          user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" };
+          user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" | "clerk" };
           workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
         };
         if (cancelled) return;
@@ -621,7 +710,7 @@ export default function Home() {
             setupComplete: Boolean(savedAccount.setupComplete),
             ownAbn: savedAccount.ownAbn || "",
             companyRecord: savedAccount.companyRecord,
-            authProvider: session.user.authProvider === "email" ? "email" : "google",
+            authProvider: session.user.authProvider === "clerk" ? "clerk" : session.user.authProvider === "email" ? "email" : "google",
             workspaceId: session.workspace.id,
             picture: session.user.picture,
             plan: session.workspace.plan,
@@ -657,7 +746,7 @@ export default function Home() {
     }
     void hydrate();
     return () => { cancelled = true; };
-  }, []);
+  }, [clerkLoaded, clerkSignedIn]);
 
   useEffect(() => {
     if (!showAuth || authStage !== "credentials" || !googleConfigured || !googleClientId) return;
@@ -684,7 +773,7 @@ export default function Home() {
             });
             const result = await signInResponse.json() as { error?: string };
             if (!signInResponse.ok) throw new Error(result.error || "Google sign-in failed.");
-            window.location.assign("/");
+            window.location.assign(TAB_PATHS.verify);
           } catch (error) {
             setGoogleSigningIn(false);
             setAuthError(error instanceof Error ? error.message : "Google sign-in failed.");
@@ -726,13 +815,32 @@ export default function Home() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const googleAuthError = params.get("auth_error");
-    if (!googleAuthError) return;
-    setAuthMode("signin");
-    setAuthError(googleAuthError);
-    setShowAuth(true);
-    params.delete("auth_error");
-    const nextQuery = params.toString();
-    window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`);
+    const shouldOpenSignin = params.get("signin") === "1";
+    if (googleAuthError || shouldOpenSignin) {
+      setAuthMode("signin");
+      if (googleAuthError) setAuthError(googleAuthError);
+      setShowAuth(true);
+      params.delete("auth_error");
+      params.delete("signin");
+      const nextQuery = params.toString();
+      window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!clerkLoaded || !hydrated) return;
+    const isAppPath = window.location.pathname === "/app" || window.location.pathname.startsWith("/app/");
+    if (currentAccount && !isAppPath) {
+      window.location.replace(TAB_PATHS[tab]);
+      return;
+    }
+    if (!clerkSignedIn && !currentAccount && isAppPath) window.location.replace("/?signin=1");
+  }, [clerkLoaded, clerkSignedIn, currentAccount, hydrated, tab]);
+
+  useEffect(() => {
+    const syncTabFromUrl = () => setTab(tabFromPathname(window.location.pathname));
+    window.addEventListener("popstate", syncTabFromUrl);
+    return () => window.removeEventListener("popstate", syncTabFromUrl);
   }, []);
 
   useEffect(() => {
@@ -862,7 +970,8 @@ export default function Home() {
     const map = new Map<string, DetectedEntity>();
     documents.forEach((document) => {
       const documentBankDetails = extractBankDetails(document.text);
-      document.abns.forEach((abn) => {
+      const verificationSelection = selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn);
+      verificationSelection.verificationAbns.forEach((abn) => {
         const context = contextForAbn(document.text, abn);
         const name = claimsFromContext(context).contractName;
         const existing = map.get(abn);
@@ -887,7 +996,13 @@ export default function Home() {
       });
     });
     return [...map.values()];
-  }, [documents]);
+  }, [documents, currentAccount?.ownAbn]);
+
+  const detectedDocumentAbns = useMemo(() => [...new Set(documents.flatMap((document) => document.abns))], [documents]);
+  const skippedOwnAbnCount = useMemo(() => {
+    const ownAbn = onlyDigits(currentAccount?.ownAbn ?? "");
+    return ownAbn && detectedDocumentAbns.includes(ownAbn) ? 1 : 0;
+  }, [currentAccount?.ownAbn, detectedDocumentAbns]);
 
   const filteredRegister = useMemo(() => {
     const term = query.trim().toLowerCase();
@@ -1076,13 +1191,14 @@ export default function Home() {
   }
 
   function availableAbnSlots() {
+    if (currentAccount?.unlimitedAbns) return Number.POSITIVE_INFINITY;
     if (!isCloudAccount(currentAccount)) return Number.POSITIVE_INFINITY;
-    return Math.max(0, (currentAccount.abnLimit ?? 30) - register.length);
+    return Math.max(0, (currentAccount.abnLimit ?? 10) - register.length);
   }
 
   function quotaMessage() {
     const planName = currentAccount?.planName || "Free";
-    const limit = currentAccount?.abnLimit ?? 30;
+    const limit = currentAccount?.abnLimit ?? 10;
     return `${planName} includes up to ${limit} ABN / bank-detail records. Upgrade your plan to add more.`;
   }
 
@@ -1102,7 +1218,7 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username: email, password: authPassword }),
         });
-        const result = await response.json() as { authenticated?: boolean; error?: string; account?: { id: string; username: string; companyName: string; setupComplete: boolean } };
+        const result = await response.json() as { authenticated?: boolean; error?: string; account?: { id: string; username: string; companyName: string; setupComplete: boolean; unlimitedAbns: boolean } };
         if (!response.ok || !result.authenticated) {
           setAuthError(result.error || "Sign-in failed.");
           return;
@@ -1121,13 +1237,13 @@ export default function Home() {
           createdAt: existingAccount?.createdAt || new Date().toISOString(),
           setupComplete: existingAccount?.setupComplete ?? result.account.setupComplete,
           ownAbn: existingAccount?.ownAbn || "",
+          authProvider: "managed",
+          unlimitedAbns: result.account.unlimitedAbns,
         };
         const nextAccounts = [...accounts.filter((account) => account.id !== managedAccount.id), managedAccount];
         persistAccounts(nextAccounts);
         localStorage.setItem(STORAGE.session, managedAccount.id);
-        setCurrentAccount(managedAccount);
-        loadAccountData(managedAccount.id);
-        setAuthPassword("");
+        window.location.assign(TAB_PATHS.verify);
       } catch {
         setAuthError("Sign-in is temporarily unavailable.");
       }
@@ -1156,7 +1272,7 @@ export default function Home() {
         setAuthCode("");
         return;
       }
-      window.location.assign("/");
+      window.location.assign(TAB_PATHS.verify);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Authentication is temporarily unavailable.");
     } finally {
@@ -1182,7 +1298,7 @@ export default function Home() {
       });
       const result = await response.json() as { authenticated?: boolean; error?: string };
       if (!response.ok || !result.authenticated) throw new Error(result.error || "Email verification failed.");
-      window.location.assign("/");
+      window.location.assign(TAB_PATHS.verify);
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Email verification failed.");
     } finally {
@@ -1211,77 +1327,14 @@ export default function Home() {
     }
   }
 
-  async function submitContact(event: FormEvent) {
-    event.preventDefault();
-    setContactError("");
-    const companyName = authCompany.trim();
-    const email = authEmail.trim().toLowerCase();
-    if (!companyName) {
-      setContactError("Enter your company name.");
-      return;
-    }
-    if (!/^\S+@\S+\.\S+$/.test(email)) {
-      setContactError("Enter a valid work email.");
-      return;
-    }
-    setContactSubmitting(true);
-    try {
-      const response = await fetch("/api/contact", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ companyName, email, website: contactWebsite }),
-      });
-      const result = await response.json() as { ok?: boolean; error?: string };
-      if (!response.ok || !result.ok) {
-        const fallbackResponse = await fetch("https://formsubmit.co/ajax/percival@wiseway.ai", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            company: companyName,
-            email,
-            _replyto: email,
-            _subject: `ABN Guard free trial request — ${companyName}`,
-            _template: "table",
-            _captcha: "false",
-            _url: window.location.href,
-            source: "ABN Guard landing page",
-            submitted_at: new Date().toISOString(),
-          }),
-        });
-        const fallbackResult = await fallbackResponse.json() as { success?: boolean | string; message?: string };
-        const delivered = fallbackResult.success === true || fallbackResult.success === "true";
-        if (!fallbackResponse.ok || !delivered) {
-          const awaitingActivation = fallbackResult.message?.toLowerCase().includes("activation");
-          throw new Error(awaitingActivation
-            ? "The contact form is being activated. Please try again in a few minutes."
-            : fallbackResult.message || result.error || "Your request could not be sent.");
-        }
-      }
-      setContactSubmitted(true);
-    } catch (error) {
-      setContactError(error instanceof Error ? error.message : "Your request could not be sent. Please try again.");
-    } finally {
-      setContactSubmitting(false);
-    }
-  }
-
-  function signOut() {
-    if (isCloudAccount(currentAccount)) void fetch("/api/auth/logout", { method: "POST" });
+  async function signOut() {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     localStorage.removeItem(STORAGE.session);
-    setCurrentAccount(null);
-    setRegister([]);
-    setChecks([]);
-    setChanges([]);
-    setHistory([]);
-    setExpandedAbns([]);
-    setLoadingHistoryAbns([]);
-    setDocuments([]);
-    setCloudWorkspaceReady(false);
-    setAuthPassword("");
-    setAuthCode("");
-    setAuthNotice("");
-    setAuthStage("credentials");
-    setAuthMode("signin");
+    if (clerkSignedIn) {
+      await clerkSignOut({ redirectUrl: "/" });
+      return;
+    }
+    window.location.assign("/");
   }
 
   async function searchSetupAbn() {
@@ -1326,7 +1379,8 @@ export default function Home() {
     let failed = 0;
     for (const file of files) {
       try {
-        const text = await readContract(file);
+        const read = await readContract(file, false);
+        const text = read.text;
         const id = crypto.randomUUID();
         const abns = extractAbns(text);
         const roleAnalysis = classifyAbnRoles(text, abns, currentAccount?.ownAbn);
@@ -1349,6 +1403,20 @@ export default function Home() {
               : candidate);
           }
         }
+        const selectedCounterpartyBeforeWorkspaceRule = selectedPayeeAbns.some((abn) => onlyDigits(abn) !== onlyDigits(currentAccount?.ownAbn ?? ""));
+        const verificationSelection = selectAbnsForVerification(abns, selectedPayeeAbns, currentAccount?.ownAbn);
+        selectedPayeeAbns = verificationSelection.selectedPayeeAbns;
+        if (!selectedCounterpartyBeforeWorkspaceRule && verificationSelection.skippedOwnAbns.length && selectedPayeeAbns.length === 1) {
+          const counterpartyAbn = selectedPayeeAbns[0];
+          abnRoles = abnRoles.map((candidate) => candidate.abn === counterpartyAbn
+            ? {
+                ...candidate,
+                role: "payee" as const,
+                confidence: Math.max(candidate.confidence, 0.9),
+                reasons: ["Only counterparty ABN after excluding this workspace", ...candidate.reasons.filter((reason) => reason !== "No clear payer or payee label found")],
+              }
+            : candidate);
+        }
         await storeOriginalFile(currentAccount.id, id, file);
         parsed.push({
           id,
@@ -1359,6 +1427,9 @@ export default function Home() {
           abnRoles,
           selectedPayeeAbns,
           payeeSelection: selectedPayeeAbns.length === 1 ? "automatic" : "unresolved",
+          processing: read.processing,
+          processingWarnings: read.warnings,
+          requiresManualReview: read.requiresManualReview,
           uploadedAt: new Date().toISOString(),
         });
       } catch {
@@ -1368,7 +1439,13 @@ export default function Home() {
     setDocuments((previous) => [...previous, ...parsed]);
     setIsParsing(false);
     const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
-    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}${failed ? `. ${failed} file${failed === 1 ? "" : "s"} could not be read.` : "."}`);
+    const unreadableFallbacks = parsed.filter((item) => item.processing === "browser" && item.processingWarnings.length).length;
+    const parsedOwnAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).skippedOwnAbns))];
+    const parsedVerificationAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).verificationAbns))];
+    const ownAbnMessage = parsedOwnAbns.length
+      ? ` ${parsedOwnAbns.length} workspace ABN${parsedOwnAbns.length === 1 ? " was" : "s were"} skipped; ${parsedVerificationAbns.length} counterparty ABN${parsedVerificationAbns.length === 1 ? " is" : "s are"} ready to verify.`
+      : "";
+    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}.${ownAbnMessage}${unreadableFallbacks ? ` ${unreadableFallbacks} PDF${unreadableFallbacks === 1 ? " needs" : "s need"} manual review because local extraction was incomplete.` : ""}${failed ? ` ${failed} file${failed === 1 ? "" : "s"} could not be read.` : ""}`);
   }
 
   function isCheckSelectedPayee(check: ContractCheck) {
@@ -1399,7 +1476,7 @@ export default function Home() {
             : "mismatch";
     const bankIssues: string[] = [];
     if (multipleBankDetails) bankIssues.push("Multiple different bank details were found across the uploaded files for this ABN.");
-    else if (bankDetailStatus === "first-seen") bankIssues.push("First bank details found for this ABN. Confirm the BSB and account number before saving.");
+    else if (bankDetailStatus === "first-seen") bankIssues.push("First bank details found for this ABN. Independently confirm the account name, BSB and account number directly with the payee before saving.");
     else if (bankDetailStatus === "mismatch") bankIssues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
     return {
       fileBankDetails,
@@ -1451,6 +1528,7 @@ export default function Home() {
     setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}…`);
     const batchId = crypto.randomUUID();
     const nextChecks: ContractCheck[] = [];
+    const failedLookups: { abn: string; message: string }[] = [];
     for (const detected of detectedEntities) {
       try {
         const official = await lookupAbn(detected.abn);
@@ -1475,9 +1553,15 @@ export default function Home() {
           issues.push(`File name “${claims.contractName}” does not match the registered entity name`);
         if (claims.contractLocation && (!officialLocation || normalizeLocation(claims.contractLocation) !== normalizeLocation(officialLocation)))
           issues.push(`File location ${claims.contractLocation} does not match the ABN Lookup location ${officialLocation || "unavailable"}`);
+        if (official.gstRegistered === false) issues.push("GST is not currently registered. Review this result before completing verification.");
         if (multipleBankDetails) issues.push("Multiple different bank details were found across the uploaded files for this ABN.");
-        else if (bankDetailStatus === "first-seen") issues.push("First bank details found for this ABN. Confirm the BSB and account number before saving.");
+        else if (bankDetailStatus === "first-seen") issues.push("First bank details found for this ABN. Independently confirm the account name, BSB and account number directly with the payee before saving.");
         else if (bankDetailStatus === "mismatch") issues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
+        const sourceDocuments = documents.filter((document) => detected.fileIds.includes(document.id));
+        if (sourceDocuments.some((document) => document.processing === "vlm" && document.requiresManualReview))
+          issues.push("VLM-assisted extraction has low confidence or warnings. Review the original file before completing verification.");
+        else if (sourceDocuments.some((document) => document.processing === "browser" && document.requiresManualReview))
+          issues.push("The PDF text extraction was incomplete. Review the original file before completing verification.");
         if (official.source === "pending") issues.push("Official API is not connected. Add a GUID and verify again.");
         const recordToSave = { ...official, bankDetails: multipleBankDetails ? savedBankDetails : fileBankDetails ?? savedBankDetails };
         nextChecks.push({
@@ -1498,13 +1582,18 @@ export default function Home() {
           ...claims,
         });
       } catch (error) {
-        setNotice(error instanceof Error ? error.message : "Lookup failed");
+        failedLookups.push({ abn: detected.abn, message: error instanceof Error ? error.message : "Lookup failed" });
       }
     }
     setChecks((previous) => [...nextChecks, ...previous].slice(0, 100));
     setActiveCheckIndex(0);
     setBusy(false);
-    setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}. Review the suggested payee before completing this batch.`);
+    if (failedLookups.length) {
+      const failedSummary = failedLookups.map((failure) => `${formatAbn(failure.abn)} (${failure.message})`).join("; ");
+      setNotice(`Verification completed for ${nextChecks.length} of ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}. ${failedLookups.length} lookup${failedLookups.length === 1 ? "" : "s"} failed: ${failedSummary}`);
+    } else {
+      setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}. Review the suggested payee before completing this batch.`);
+    }
   }
 
   function clearVerificationResults() {
@@ -1671,6 +1760,8 @@ export default function Home() {
   function navigateTo(nextTab: Tab) {
     setNotice("");
     setTab(nextTab);
+    const nextPath = TAB_PATHS[nextTab];
+    if (window.location.pathname !== nextPath) window.history.pushState({}, "", nextPath);
   }
 
   async function refreshAll(trigger: MonitoringTrigger) {
@@ -1813,9 +1904,6 @@ export default function Home() {
       setAuthCode("");
       setAuthError("");
       setAuthNotice("");
-      setContactError("");
-      setContactSubmitted(false);
-      setContactWebsite("");
       setShowAuth(true);
     };
 
@@ -1824,7 +1912,7 @@ export default function Home() {
         <nav className="landing-nav" aria-label="Main navigation">
           <a className="landing-brand" href="#top" aria-label="ABN Guard home"><span>A</span><strong>ABN Guard</strong></a>
           <div className="landing-nav-links"><a href="#product">Product</a><a href="#how-it-works">How it works</a><a href="#pricing">Pricing</a><a href="#security">Security</a></div>
-          <div className="landing-nav-actions"><button className="landing-signin" type="button" onClick={() => openAuth("signin")}>Sign in</button><button className="landing-nav-cta" type="button" onClick={() => openAuth("register")}>Join now <span>↗</span></button></div>
+          <div className="landing-nav-actions"><SignInButton mode="modal" forceRedirectUrl="/app/check"><button className="landing-signin" type="button">Sign in</button></SignInButton><SignUpButton mode="modal" forceRedirectUrl="/app/check"><button className="landing-nav-cta" type="button">Join now <span>↗</span></button></SignUpButton></div>
         </nav>
 
         <section className="landing-hero" id="top">
@@ -1832,7 +1920,7 @@ export default function Home() {
             <div className="landing-kicker"><span>✓</span> Australian supplier verification</div>
             <h1>Know who you’re paying.<br /><em>Before money moves.</em></h1>
             <p>Turn contracts and invoices into trusted supplier records. Check ABNs, GST status and bank details in one clear workflow.</p>
-            <div className="landing-hero-actions"><button type="button" className="landing-primary" onClick={() => openAuth("register")}>Check suppliers free <span>→</span></button><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
+            <div className="landing-hero-actions"><SignUpButton mode="modal" forceRedirectUrl="/app/check"><button type="button" className="landing-primary">Check suppliers free <span>→</span></button></SignUpButton><a href="#product" className="landing-secondary"><span>▶</span> See how it works</a></div>
             <div className="landing-trust"><span><b>✓</b> No credit card</span><span><b>✓</b> Set up in minutes</span><span><b>✓</b> Australian data</span></div>
           </div>
 
@@ -1868,17 +1956,18 @@ export default function Home() {
         <section className="landing-pricing" id="pricing">
           <div className="landing-pricing-heading"><p className="landing-label">SIMPLE MONTHLY PRICING</p><h2>Start free. Grow when<br />your register does.</h2><p>Every plan includes document checks, ABN and GST verification, bank-detail comparison and change monitoring.</p></div>
           <div className="pricing-grid">
-            <article><p>Free trial</p><h3><span>A$</span>0<small>/month</small></h3><b>Up to 30 ABN / bank-detail records</b><ul><li>Google or email sign-in</li><li>Supplier verification</li><li>ABN register and alerts</li></ul><button type="button" onClick={() => chooseLandingPlan("free")}>Join now <span>→</span></button></article>
-            <article className="popular"><em>Most popular</em><p>Starter</p><h3><span>A$</span>9.90<small>/month</small></h3><b>Up to 500 ABN / bank-detail records</b><ul><li>Everything in Free trial</li><li>Larger supplier register</li><li>Stripe subscription management</li></ul><button type="button" onClick={() => chooseLandingPlan("starter")}>Choose Starter <span>→</span></button></article>
+            <article><p>Free</p><h3><span>A$</span>0<small>/month</small></h3><b>Up to 10 ABN / bank-detail records</b><ul><li>Google or email sign-in</li><li>Supplier verification</li><li>ABN register and alerts</li></ul><button type="button" onClick={() => chooseLandingPlan("free")}>Join now <span>→</span></button></article>
+            <article className="popular"><em>Most popular</em><p>Starter</p><h3><span>A$</span>9.90<small>/month + GST</small></h3><b>Up to 100 ABN / bank-detail records</b><ul><li>Everything in Free</li><li>Larger supplier register</li><li>Stripe subscription management</li></ul><button type="button" onClick={() => chooseLandingPlan("starter")}>Choose Starter <span>→</span></button></article>
+            <article className="enterprise"><p>Enterprise</p><h3>Custom</h3><b>For larger teams and tailored workflows</b><ul><li>Everything in Starter</li><li>Custom record limits and onboarding</li><li>Priority support and integrations</li></ul><Link className="enterprise-cta" href="/contact">Contact us <span>→</span></Link></article>
           </div>
-          <small>Prices are in Australian dollars. Cancel or change plan through the secure Stripe billing portal.</small>
+          <small>Prices are in Australian dollars and exclude GST where applicable. Cancel or change Starter through the secure Stripe billing portal.</small>
         </section>
 
-        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files remain in your browser.</p><div><span><b>01</b>Local document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
+        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files are processed directly in your browser.</p><div><span><b>01</b>Browser-first document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
 
-        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><button type="button" className="landing-primary light" onClick={() => openAuth("register")}>Join now — it’s free <span>→</span></button><small>No credit card required · Set up in minutes</small></section>
+        <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><SignUpButton mode="modal" forceRedirectUrl="/app/check"><button type="button" className="landing-primary light">Join now — it’s free <span>→</span></button></SignUpButton><small>No credit card required · Set up in minutes</small></section>
 
-        <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><a href="#pricing">Pricing</a><a href="#security">Security</a><button type="button" onClick={() => openAuth("signin")}>Sign in</button></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
+        <footer className="landing-footer"><a className="landing-brand" href="#top"><span>A</span><strong>ABN Guard</strong></a><p>Supplier verification for Australian finance teams.</p><div><a href="#product">Product</a><Link href="/contact">Contact</Link><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link><SignInButton mode="modal" forceRedirectUrl="/app/check"><button type="button">Sign in</button></SignInButton></div><small>© {new Date().getFullYear()} ABN Guard</small></footer>
 
         {showAuth && <div className="auth-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setShowAuth(false); }}>
           <section className="auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
@@ -1900,7 +1989,7 @@ export default function Home() {
                 <p className="eyebrow">{authMode === "register" ? "CREATE YOUR WORKSPACE" : "WELCOME BACK"}</p>
                 <h2 id="auth-title">{authMode === "register" ? "Start checking suppliers for free" : "Sign in to ABN Guard"}</h2>
                 <p>{authMode === "register" ? "Create your company workspace with Google or your work email." : "Continue with Google or sign in using your email and password."}</p>
-                {authMode === "register" && <div className="auth-plan-summary"><span>Free trial</span><b>Up to 30 ABN / bank-detail records</b><small>No credit card required</small></div>}
+                {authMode === "register" && <div className="auth-plan-summary"><span>Free</span><b>Up to 10 ABN / bank-detail records</b><small>No credit card required</small></div>}
                 {googleConfigured ? <div className={googleSigningIn ? "google-auth-button-host busy" : "google-auth-button-host"} ref={googleButtonRef}>{googleSigningIn && <span>Signing you in…</span>}</div> : <button className="google-auth-button" type="button" disabled><span className="google-mark">G</span>{authMode === "register" ? "Join with Google" : "Sign in with Google"}</button>}
                 <div className="auth-divider"><span>or use email</span></div>
                 <form className="email-auth-form" onSubmit={(event) => void submitAuth(event)}>
@@ -1946,10 +2035,10 @@ export default function Home() {
   }
 
   const nav = [
-    { id: "verify" as const, icon: "C", label: "Check", hint: "Extract & compare" },
-    { id: "today" as const, icon: "R", label: "Review", hint: `${doubleCheckItems.length} to review` },
-    { id: "register" as const, icon: "R", label: "Records", hint: `${register.length} records` },
-    { id: "changes" as const, icon: "A", label: "Alerts", hint: `${changes.length} changes` },
+    { id: "verify" as const, icon: "✓", label: "Check", hint: "Extract & compare" },
+    { id: "today" as const, icon: "◎", label: "Review", hint: `${doubleCheckItems.length} to review` },
+    { id: "register" as const, icon: "▤", label: "Records", hint: `${register.length} records` },
+    { id: "changes" as const, icon: "!", label: "Alerts", hint: `${changes.length} changes` },
   ];
 
   return (
@@ -1958,9 +2047,10 @@ export default function Home() {
         <div className="brand"><span className="brand-mark">A</span><div><strong>ABN Guard</strong><small>Supplier verification</small></div></div>
         <nav><p className="nav-title">Workspace</p>{nav.map((item) => <button key={item.id} className={tab === item.id ? "nav-item active" : "nav-item"} onClick={() => navigateTo(item.id)}><span>{item.icon}</span><div><b>{item.label}</b><small>{item.hint}</small></div></button>)}</nav>
         <div className="sidebar-bottom">
-          {isCloudAccount(currentAccount) && <div className="sidebar-plan"><div><b>{currentAccount.planName || "Free"}</b><span>{register.length} / {currentAccount.abnLimit ?? 30} records</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 30) * 100)}%` }} /></i><button type="button" disabled={billingBusy} onClick={() => void (currentAccount.plan === "starter" ? openBillingPortal() : startCheckout("starter"))}>{billingBusy ? "Opening Stripe…" : currentAccount.plan === "starter" ? "Manage plan" : "Upgrade now"}</button></div>}
+          {isCloudAccount(currentAccount) && <div className="sidebar-plan"><div><b>{currentAccount.planName || "Free"}</b><span>{register.length} / {currentAccount.abnLimit ?? 10} records</span></div><i><span style={{ width: `${Math.min(100, register.length / (currentAccount.abnLimit ?? 10) * 100)}%` }} /></i><button type="button" disabled={billingBusy} onClick={() => void (currentAccount.plan === "starter" ? openBillingPortal() : startCheckout("starter"))}>{billingBusy ? "Opening Stripe…" : currentAccount.plan === "starter" ? "Manage plan" : "Upgrade now"}</button></div>}
           <button className={tab === "settings" ? "nav-item active" : "nav-item"} onClick={() => navigateTo("settings")}><span>⚙</span><div><b>Settings</b><small>{apiConfigured ? "Official API" : "Demo mode"}</small></div></button>
-          <div className="account-card">{currentAccount.picture ? <img src={currentAccount.picture} alt="" referrerPolicy="no-referrer" /> : <span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span>}<div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button onClick={signOut} aria-label="Sign out">↗</button></div>
+          <button className="nav-item support-nav" type="button" onClick={() => setFeedbackOpen(true)}><span>?</span><div><b>Feedback & support</b><small>We read every message</small></div></button>
+          <div className="account-card">{currentAccount.picture ? <img src={currentAccount.picture} alt="" referrerPolicy="no-referrer" /> : <span>{currentAccount.companyName.slice(0, 2).toUpperCase()}</span>}<div><b>{currentAccount.companyName}</b><small>{currentAccount.email}</small></div><button className="account-signout" type="button" onClick={() => void signOut()}>Sign out</button></div>
         </div>
       </aside>
 
@@ -1969,7 +2059,7 @@ export default function Home() {
         {notice && <div className="notice"><span>i</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
 
         {tab === "verify" && <div className="page-content verify-page">
-          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{isCloudAccount(currentAccount) && <em> / {currentAccount.abnLimit ?? 30}</em>}</strong><small>{isCloudAccount(currentAccount) ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
+          <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{isCloudAccount(currentAccount) && <em> / {currentAccount.abnLimit ?? 10}</em>}</strong><small>{isCloudAccount(currentAccount) ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>
@@ -1977,7 +2067,7 @@ export default function Home() {
                 <span className="upload-icon">↥</span><strong>{isParsing ? "Reading contracts…" : "Drop contracts here, or click to browse"}</strong><small>Upload multiple PDF, DOCX or TXT files · processed in this browser</small>
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
-              <div className="file-recognition-summary"><span>Files recognised</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
+              <div className="file-recognition-summary"><span>Files recognised{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""} · {detectedEntities.length} to verify</small>}</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
               <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : `Verify ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
             </article>
 
@@ -1997,7 +2087,7 @@ export default function Home() {
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
                 const isVerified = checkIsVerified(check);
                 return <div className={isSelectedPayee && !isVerified ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}`}</span>{check.issues.length > 0 && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Review required"}</span>{checkRequiresReview(check) && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
@@ -2043,15 +2133,15 @@ export default function Home() {
                 <div className="today-day-counts"><span className={dayDoubleChecks.length ? "attention" : ""}><b>{dayDoubleChecks.length}</b> Double check</span><span><b>{dayVerified.length}</b> Verified</span><i aria-hidden="true">⌄</i></div>
               </button>
               {isExpanded && <div className="today-day-content" id={`today-day-${day}`}>
-                <TodaySection title="Double check" subtitle="Review unresolved mismatches before adding them to Records." items={dayDoubleChecks} onVerify={verifyTodayReview} onOpenFile={(file) => void openTodayFile(file)} />
-                <TodaySection title="Verified" subtitle="Completed checks that are already recorded in your supplier records." items={dayVerified} onOpenFile={(file) => void openTodayFile(file)} />
+                <TodaySection title="Double check" items={dayDoubleChecks} onVerify={verifyTodayReview} onOpenFile={(file) => void openTodayFile(file)} />
+                <TodaySection title="Verified" items={dayVerified} onOpenFile={(file) => void openTodayFile(file)} />
               </div>}
             </section>;
           })}</div>
         </div>}
 
         {tab === "register" && <div className="page-content">
-          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy || availableAbnSlots() <= 0}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()} disabled={availableAbnSlots() <= 0}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button><button className="primary-small" onClick={() => void refreshAll("manual")} disabled={busy}>↻ {busy ? "Updating" : "Update now"}</button></div></div>
+          <div className="table-toolbar"><div className="table-filters"><div className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search ABN, entity name or state" /></div><select className="filter-select" aria-label="Filter ABN Register" value={registerFilter} onChange={(event) => setRegisterFilter(event.target.value as RegisterFilter)}><option value="all">All records</option><option value="attention">Needs attention</option><option value="active">Active ABNs</option><option value="cancelled">Cancelled ABNs</option><option value="gst-registered">GST registered</option><option value="gst-not-registered">GST not registered</option></select></div><div className="toolbar-actions"><input value={newAbn} onChange={(event) => setNewAbn(event.target.value)} placeholder="Enter ABN" onKeyDown={(event) => event.key === "Enter" && void addAbn()} /><button className="secondary-button" onClick={() => void addAbn()} disabled={busy || availableAbnSlots() <= 0}>+ Add</button><button className="secondary-button" onClick={() => importRef.current?.click()} disabled={availableAbnSlots() <= 0}>Import Excel</button><input ref={importRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={(event) => void importList(event)} /><button className="secondary-button" onClick={() => void exportList()}>Export Excel</button></div></div>
           <div className="table-meta"><span>Showing {filteredRegister.length} of {register.length} records · {register.filter((item) => item.status === "Active").length} Active</span><span>Last bulk update: {dateTime(lastRefresh)}</span></div>
           <div className="table-wrap records-table-wrap"><table className="records-table"><thead><tr><th>ABN / Entity name</th><th>ABN status</th><th>GST</th><th>Entity type</th><th>Main location</th><th>Bank details</th><th>Last checked</th><th aria-label="Actions" /></tr></thead><tbody>{filteredRegister.map((item) => {
             const isExpanded = expandedAbns.includes(item.abn);
@@ -2110,7 +2200,7 @@ export default function Home() {
 
         {tab === "changes" && <div className="page-content changes-layout"><section className="change-summary panel"><p className="eyebrow">Monitoring status</p><h2>Stay on top of critical changes</h2><p>Changes to ABN status, GST registration, entity name or main location are recorded only when a weekly check is due or you run a check now.</p><div className="schedule-card"><span>↻</span><div><b>{schedule === "weekly" ? "Weekly automatic check" : "Manual checks"}</b><small>{schedule === "weekly" ? "Runs when the workspace is open and the weekly check is due" : "Runs only when you click the button below"}</small></div></div><button className="primary-button" onClick={() => void refreshAll("manual")} disabled={busy}>{busy ? "Updating…" : "Check all ABNs now"}<span>→</span></button></section><section className="timeline panel"><div className="panel-heading"><div><span className="step">3</span><h2>Change timeline</h2></div><small>{changes.length} items</small></div>{!changes.length ? <div className="empty-state compact"><span>◌</span><h3>No changes found yet</h3><p>Changes found by weekly or manual checks will appear here.</p></div> : changes.map((item) => <div className="timeline-item" key={item.id}><span className={`severity ${item.severity}`} /><div><div><b>{item.entityName}</b><small>{formatAbn(item.abn)}</small></div><p>{item.description}</p><time>{dateTime(item.changedAt)}</time></div></div>)}</section></div>}
 
-        {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This local workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts on this device.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID is read from the server environment and is never sent to the browser.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "ABN_LOOKUP_GUID is configured on the server" : "Add ABN_LOOKUP_GUID to .env.local and restart the local server"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>Choose a weekly check while the workspace is open, or run monitoring only when requested.</p><div className="radio-group">{([{ id: "weekly", label: "Weekly", note: "Every 7 days" }, { id: "manual", label: "Manual", note: "Only when clicked" }] as const).map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
+        {tab === "settings" && <div className="page-content settings-grid"><article className="panel settings-card"><div className="setting-icon">CO</div><h2>Company workspace</h2><p>This workspace belongs to {currentAccount.companyName}. Supplier records and contract checks are separated from other accounts.</p><div className="company-setting"><b>{currentAccount.companyName}</b><span>{formatAbn(currentAccount.ownAbn)}</span><small>{currentAccount.email}</small></div></article><article className="panel settings-card"><div className="setting-icon">API</div><h2>ABN Lookup connection</h2><p>The Authentication GUID remains on the server and authenticated requests are protected by account-level rate limits.</p><div className={apiConfigured ? "connection-status connected" : "connection-status"}><span>{apiConfigured ? "✓" : "!"}</span><div><b>{apiConfigured ? "Official service connected" : "Environment variable not detected"}</b><small>{apiConfigured ? "Secure server-side connection" : "The service owner needs to configure the ABN Lookup connection"}</small></div></div></article><article className="panel settings-card"><div className="setting-icon">↻</div><h2>Register update frequency</h2><p>Choose a weekly check while this workspace is open, or run monitoring only when requested.</p><div className="radio-group">{([{ id: "weekly", label: "Weekly", note: "Every 7 days while open" }, { id: "manual", label: "Manual", note: "Only when clicked" }] as const).map((item) => <button key={item.id} className={schedule === item.id ? "radio-option selected" : "radio-option"} onClick={() => setSchedule(item.id)}><span>{schedule === item.id ? "●" : "○"}</span><div><b>{item.label}</b><small>{item.note}</small></div></button>)}</div></article><article className="panel settings-card support-card"><div className="setting-icon">?</div><h2>Support, privacy & feedback</h2><p>Send product feedback or get help. Messages are saved securely and linked to this account for follow-up.</p><div className="support-actions"><button type="button" onClick={() => setFeedbackOpen(true)}>Send feedback</button><Link href="/contact">Contact</Link><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link></div></article><div className="settings-footer"><button className="primary-button" onClick={saveSettings}>Save settings<span>✓</span></button><small>Last bulk update: {dateTime(lastRefresh)}</small></div></div>}
       </section>
       {editingBankRecord && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeBankEditor(); }}>
         <section className="bank-editor" role="dialog" aria-modal="true" aria-labelledby="bank-editor-title">
@@ -2127,6 +2217,7 @@ export default function Home() {
           </form>
         </section>
       </div>}
+      <FeedbackDialog open={feedbackOpen} onClose={() => setFeedbackOpen(false)} />
     </main>
   );
 }

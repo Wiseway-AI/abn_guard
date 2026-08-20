@@ -32,8 +32,8 @@ test("forwards a free-trial request to the configured contact email", async () =
     assert.equal((await response.json()).ok, true);
     assert.match(forwarded.url, /formsubmit\.co\/ajax\/percival%40wiseway\.ai$/);
     const payload = JSON.parse(forwarded.options.body);
-    assert.equal(payload.company, "Northbank Pty Ltd");
-    assert.equal(payload.email, "finance@northbank.example");
+    assert.equal(payload.Company, "Northbank Pty Ltd");
+    assert.equal(payload.Email, "finance@northbank.example");
     assert.equal(payload._replyto, "finance@northbank.example");
   } finally {
     globalThis.fetch = previousFetch;

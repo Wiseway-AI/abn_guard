@@ -15,6 +15,8 @@
   --red-bg: #fff0ed;
 }
 
+.clerk-auth-page { min-height: 100vh; display: grid; place-items: center; padding: 32px 20px; background: #f4f7fb; }
+
 * { box-sizing: border-box; }
 
 html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
@@ -170,6 +172,14 @@ button { color: inherit; }
 .bank-verification-head b { display: block; }
 .bank-verification-head b { font-size: 14px; }
 .bank-verification-head em { flex: 0 0 auto; padding: 5px 9px; border-radius: 999px; background: #edf0ee; color: #65716b; font-size: 10px; font-style: normal; font-weight: 800; }
+.bank-verification-status { display: flex; align-items: center; justify-content: flex-end; gap: 10px; position: relative; }
+.bank-risk-help { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; position: relative; padding: 0; border: 2px solid #e24a3b; border-radius: 50%; background: #fff7f5; color: #c93328; cursor: help; }
+.bank-risk-help > span:first-child { font-size: 18px; font-weight: 900; line-height: 1; }
+.bank-risk-tooltip { width: min(330px, calc(100vw - 48px)); position: absolute; z-index: 20; top: calc(100% + 10px); right: 0; padding: 13px 14px; border: 1px solid #e4b36d; border-radius: 10px; background: #fffaf0; color: #5f411a; box-shadow: 0 12px 30px rgba(63,43,16,.18); font-size: 11px; font-weight: 500; line-height: 1.5; text-align: left; opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity .15s ease, transform .15s ease, visibility .15s ease; pointer-events: none; }
+.bank-risk-tooltip::before { content: ""; width: 10px; height: 10px; position: absolute; top: -6px; right: 10px; border-top: 1px solid #e4b36d; border-left: 1px solid #e4b36d; background: #fffaf0; transform: rotate(45deg); }
+.bank-risk-tooltip strong { display: block; margin-bottom: 5px; color: #9b3d2f; font-size: 12px; }
+.bank-risk-help:hover .bank-risk-tooltip, .bank-risk-help:focus-visible .bank-risk-tooltip, .bank-risk-help:focus .bank-risk-tooltip { opacity: 1; visibility: visible; transform: translateY(0); }
+.bank-risk-help:focus-visible { outline: 3px solid rgba(226,74,59,.18); outline-offset: 2px; }
 .bank-verification.first-seen .bank-verification-head em { background: #f9e7c4; color: #875315; }
 .bank-verification.mismatch .bank-verification-head em, .bank-verification.multiple .bank-verification-head em { background: #fae7e3; color: #9b3f35; }
 .bank-match-summary { min-height: 64px; margin: 0 0 12px; padding: 10px 13px; display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; align-items: center; gap: 10px; border: 1px solid #cfe2d8; border-radius: 10px; background: #f3faf6; }
@@ -201,12 +211,14 @@ button { color: inherit; }
 .bank-detail-grid dt { color: #78847e; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .bank-detail-grid dd { margin: 3px 0 0; color: var(--ink); font-size: 12px; font-weight: 700; overflow-wrap: anywhere; }
 .bank-empty { margin: 0; color: #7f8984; font-size: 11px; }
-.bank-confirmation { margin: 0; padding: 10px 13px; border-top: 1px solid #ead5aa; background: #fff5de; color: #76501d; font-size: 11px; line-height: 1.45; }
+.bank-confirmation { margin: 0; padding: 12px 13px; border-top: 1px solid #ead5aa; background: #fff5de; color: #76501d; font-size: 11px; font-weight: 650; line-height: 1.55; }
 .bank-confirmation.danger { border-top-color: #ebc3bc; background: #fff0ed; color: #8e4138; }
 .registration-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 0 0 12px; }
 .registration-fact { display: grid; grid-template-columns: 38px 1fr; gap: 10px; align-items: center; min-width: 0; padding: 12px; border: 1px solid #dfe6e2; border-radius: 9px; background: #fafcfb; }
 .registration-fact > span { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 8px; background: #e3eee8; color: var(--green); font-size: 9px; font-weight: 800; }
+.registration-fact.gst-inactive { border-color: #efc8c2; background: #fff1ef; }
 .registration-fact.gst-inactive > span { background: #f7e9e5; color: var(--red); }
+.registration-fact.gst-inactive b { color: #9b342b; }
 .registration-fact.abn-date > span { background: #e8edf4; color: #516985; }
 .registration-fact div { min-width: 0; }
 .registration-fact small, .registration-fact b, .registration-fact p { display: block; }
@@ -248,7 +260,6 @@ button { color: inherit; }
 .today-section { padding: 20px; }
 .today-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
 .today-section-heading h2 { margin: 0; font: 600 22px Georgia, serif; }
-.today-section-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .today-section-heading > span { min-width: 34px; height: 28px; display: grid; place-items: center; border-radius: 999px; background: #eef4f0; color: var(--green); font-size: 12px; font-weight: 800; }
 .today-table table { min-width: 1120px; }
 .today-table td:first-child { max-width: 210px; overflow-wrap: anywhere; }
@@ -548,9 +559,12 @@ td small { font-size: 11px; }
 .account-card b { font-size: 11px; }
 .account-card small { font-size: 9px; color: #91b2a4; margin-top: 4px; }
 .account-card button { border: 0; background: rgba(255,255,255,.07); color: #b5cdc3; width: 25px; height: 25px; border-radius: 6px; cursor: pointer; }
+.account-card .account-signout { width: auto; min-width: 62px; height: 30px; padding: 0 9px; color: #d8e6ff; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.account-card .account-signout:hover { background: rgba(255,255,255,.14); color: #fff; }
 
 .file-recognition-summary { min-height: 48px; margin-top: 12px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 8px; background: #f8fbf9; }
 .file-recognition-summary span { color: var(--muted); font-size: 12px; font-weight: 700; }
+.file-recognition-summary span small { display: block; margin-top: 3px; color: #78889f; font-size: 10px; font-weight: 600; }
 .file-recognition-summary strong { color: var(--green-2); font-size: 15px; }
 .company-setting { border: 1px solid var(--line); background: #fafbf9; border-radius: 8px; padding: 13px; margin-top: 18px; }
 .company-setting b, .company-setting span, .company-setting small { display: block; }
@@ -637,7 +651,7 @@ th { font-size: 12px; }
 td, td b { font-size: 14px; }
 td small { font-size: 12px; }
 .today-file-links button, .today-issues, .today-verify, .today-verified { font-size: 13px; }
-.today-section-heading p, .today-summary p, .today-empty { font-size: 13px; }
+.today-summary p, .today-empty { font-size: 13px; }
 .table-wrap { -webkit-overflow-scrolling: touch; scrollbar-width: thin; scrollbar-color: #afbeb7 transparent; }
 
 @media (max-width: 1050px) {
@@ -830,6 +844,9 @@ td small { font-size: 12px; }
   .compare-value em { align-self: flex-start; }
   .bank-verification-head { flex-direction: column; }
   .bank-verification-head em { align-self: flex-start; }
+  .bank-verification-status { width: 100%; justify-content: flex-start; }
+  .bank-risk-tooltip { right: auto; left: 0; }
+  .bank-risk-tooltip::before { right: auto; left: 10px; }
   .bank-match-summary { grid-template-columns: 38px minmax(0, 1fr); }
   .bank-match-summary em { grid-column: 2; justify-self: start; }
   .bank-detail-grid { grid-template-columns: 1fr; }
@@ -1006,7 +1023,7 @@ td small { font-size: 12px; }
 .landing-pricing-heading { max-width: 720px; margin: 0 auto 55px; }
 .landing-pricing-heading h2 { margin: 0; font: 500 clamp(40px, 4.5vw, 62px)/1.03 Georgia, serif; letter-spacing: -.04em; }
 .landing-pricing-heading > p:last-child { max-width: 620px; margin: 22px auto 0; color: #64716b; font-size: 15px; line-height: 1.7; }
-.pricing-grid { width: min(800px, 100%); margin: 0 auto; display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; text-align: left; }
+.pricing-grid { width: min(1180px, 100%); margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; text-align: left; }
 .pricing-grid article { min-height: 450px; padding: 36px 34px 32px; display: flex; flex-direction: column; border: 1px solid #d8dfd9; border-radius: 16px; background: #fbfcf9; box-shadow: 0 12px 32px rgba(30,61,49,.04); position: relative; }
 .pricing-grid article.popular { border: 2px solid #28684f; background: #f8fcf9; box-shadow: 0 22px 52px rgba(30,81,61,.12); }
 .pricing-grid article > em { padding: 7px 12px; position: absolute; right: 20px; top: 20px; border-radius: 999px; background: #dceee5; color: #216046; font-size: 9px; font-style: normal; font-weight: 900; text-transform: uppercase; letter-spacing: .08em; }
@@ -1017,7 +1034,7 @@ td small { font-size: 12px; }
 .pricing-grid article > b { margin: 20px 0 25px; padding-bottom: 25px; border-bottom: 1px solid #e1e5e1; font-size: 14px; }
 .pricing-grid ul { margin: 0 0 30px; padding: 0; display: grid; gap: 14px; list-style: none; color: #5d6c65; font-size: 12px; }
 .pricing-grid li::before { content: "✓"; margin-right: 9px; color: #27805b; font-weight: 900; }
-.pricing-grid button { min-height: 48px; margin-top: auto; padding: 0 17px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #bfcfc7; border-radius: 9px; background: white; color: #194533; cursor: pointer; font-size: 12px; font-weight: 900; }
+.pricing-grid button, .pricing-grid .enterprise-cta { min-height: 48px; margin-top: auto; padding: 0 17px; display: flex; align-items: center; justify-content: space-between; border: 1px solid #bfcfc7; border-radius: 9px; background: white; color: #194533; cursor: pointer; font-size: 12px; font-weight: 900; text-decoration: none; }
 .pricing-grid .popular button { border-color: #1f6148; background: #1f6148; color: white; }
 .landing-pricing > small { display: block; margin-top: 23px; color: #77847d; font-size: 10px; }
 

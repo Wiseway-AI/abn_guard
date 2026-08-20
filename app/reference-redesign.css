@@ -224,7 +224,7 @@ tbody tr:hover td { background: #f8faff; }
 .pricing-grid article > em { background: #1746d1; color: #fff; }
 .pricing-grid article > p { color: #2454e6; }
 .pricing-grid li::before { color: #1746d1; }
-.pricing-grid button { border-radius: 999px; color: #1746d1; }
+.pricing-grid button, .pricing-grid .enterprise-cta { border-radius: 999px; color: #1746d1; }
 .pricing-grid .popular button { border-color: #1746d1; background: #1746d1; }
 
 .landing-security { background: #071f52; }
@@ -268,4 +268,42 @@ tbody tr:hover td { background: #f8faff; }
   .landing-hero { width: calc(100% - 20px); margin-top: 10px; padding: 55px 22px 70px; border-radius: 24px; }
   .landing-hero h1 { font-size: clamp(44px, 13vw, 62px); }
   .landing-product-shot { min-width: 600px; margin: 24px -300px 0 0; transform: scale(.9); transform-origin: left top; }
+}
+
+/* Product workspace layout refinement */
+@media (min-width: 721px) {
+  .sidebar { width: 248px; padding: 22px 14px 16px; }
+  .workspace { width: calc(100% - 248px); margin-left: 248px; }
+  .topbar { min-height: 104px; padding: 20px clamp(24px, 2.4vw, 38px) 18px; }
+}
+
+.topbar > div:first-child { max-width: 760px; }
+
+.verify-page { width: 100%; max-width: none; margin: 0; box-sizing: border-box; }
+.verify-page .stats-row { gap: 14px; margin-bottom: 18px; }
+.verify-page .stats-row article { min-height: 118px; padding: 17px 19px; display: flex; flex-direction: column; justify-content: center; box-shadow: 0 8px 26px rgba(18,44,82,.045); }
+.verify-page .stats-row strong { margin: 7px 0 4px; font-variant-numeric: tabular-nums; }
+.verify-page .verify-grid { width: 100%; gap: 18px; align-items: stretch; }
+.verify-page .contract-panel, .verify-page .results-panel { min-width: 0; padding: 20px; }
+.verify-page .contract-panel { align-self: start; }
+.verify-page .results-panel { min-height: 520px; }
+.verify-page .panel-heading { min-height: 38px; margin-bottom: 16px; }
+.verify-page .dropzone { min-height: 132px; padding: 18px; }
+.verify-page .file-recognition-summary { margin-top: 12px; }
+.verify-page .empty-state { height: 410px; }
+
+@media (min-width: 1281px) {
+  .verify-page { padding: 28px clamp(24px, 2.4vw, 38px) 44px; }
+  .verify-page .stats-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .verify-page .verify-grid { grid-template-columns: minmax(360px, .82fr) minmax(560px, 1.18fr); }
+}
+
+@media (min-width: 721px) and (max-width: 1280px) {
+  .verify-page .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .verify-page .verify-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 720px) {
+  .verify-page .results-panel { min-height: 430px; }
+  .verify-page .empty-state { height: 320px; }
 }

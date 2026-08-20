@@ -28,8 +28,8 @@ export async function GET(request: Request) {
     if (!profileResponse.ok || !profile.sub || !profile.email || profile.email_verified === false) throw new Error("A verified Google email address is required.");
     const account = await upsertGoogleUser({ id: profile.sub, email: profile.email.toLowerCase(), name: profile.name?.trim() || profile.email.split("@")[0], picture: profile.picture ?? "" });
     if (!account) throw new Error("Your ABN Guard workspace could not be created.");
-    const headers = new Headers({ Location: absoluteAppUrl(request) });
-    headers.append("Set-Cookie", await createSessionCookie(account.user.id, request));
+    const headers = new Headers({ Location: `${absoluteAppUrl(request)}/app/check` });
+    headers.append("Set-Cookie", await createSessionCookie(account.user.id, request, account.user.session_version));
     headers.append("Set-Cookie", clearOauthStateCookie(request));
     return new Response(null, { status: 302, headers });
   } catch (error) {

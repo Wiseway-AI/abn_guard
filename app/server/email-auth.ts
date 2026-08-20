@@ -76,6 +76,24 @@ export async function sendVerificationEmail(email: string, companyName: string, 
   }
 }
 
+export async function sendAccountDeletionEmail(email: string, companyName: string, code: string) {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const from = process.env.AUTH_FROM_EMAIL?.trim();
+  if (!apiKey || !from) throw new Error("Account security email is not configured yet.");
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from,
+      to: [email],
+      subject: `${code} confirms deletion of your ABN Guard account`,
+      html: `<div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;padding:28px;color:#071b33"><div style="font-weight:800;font-size:18px;color:#1746d1">ABN Guard</div><h1 style="font-size:26px;margin:28px 0 12px">Confirm permanent account deletion</h1><p style="line-height:1.6;color:#52637a">Hi ${escapeHtml(companyName)}, enter this code in ABN Guard only if you requested permanent deletion of your account and workspace.</p><div style="margin:28px 0;padding:20px;border-radius:14px;background:#fff2f0;color:#b42318;font-size:32px;font-weight:800;letter-spacing:8px;text-align:center">${code}</div><p style="line-height:1.6;color:#52637a">This code expires in 10 minutes. Deletion cancels any active subscription immediately and cannot be undone. If you did not request this, change your password and contact support.</p></div>`,
+      text: `Your ABN Guard account deletion code is ${code}. It expires in 10 minutes. Deletion cannot be undone. If you did not request this, contact support.`,
+    }),
+  });
+  if (!response.ok) throw new Error("The account security email could not be sent. Please try again shortly.");
+}
+
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
 }
@@ -86,5 +104,16 @@ export function validEmail(value: string) {
 
 export function sameOriginRequest(request: Request) {
   const origin = request.headers.get("Origin");
-  return !origin || origin === new URL(request.url).origin;
+  if (!origin) return true;
+
+  const allowedOrigins = new Set([new URL(request.url).origin]);
+  const configuredAppUrl = process.env.APP_URL?.trim();
+  if (configuredAppUrl) {
+    try {
+      allowedOrigins.add(new URL(configuredAppUrl).origin);
+    } catch {
+      return false;
+    }
+  }
+  return allowedOrigins.has(origin);
 }

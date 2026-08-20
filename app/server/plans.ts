@@ -2,8 +2,8 @@ export const PLAN_KEYS = ["free", "starter"] as const;
 export type PlanKey = typeof PLAN_KEYS[number];
 
 export const PLANS: Record<PlanKey, { name: string; monthlyAud: number; abnLimit: number; priceEnv?: string }> = {
-  free: { name: "Free", monthlyAud: 0, abnLimit: 30 },
-  starter: { name: "Starter", monthlyAud: 9.9, abnLimit: 500, priceEnv: "STRIPE_STARTER_PRICE_ID" },
+  free: { name: "Free", monthlyAud: 0, abnLimit: 10 },
+  starter: { name: "Starter", monthlyAud: 9.9, abnLimit: 100, priceEnv: "STRIPE_STARTER_PRICE_ID" },
 };
 
 export function isPlanKey(value: unknown): value is PlanKey {

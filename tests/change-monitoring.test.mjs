@@ -10,6 +10,9 @@ test("records changes only during weekly or manual monitoring checks", async () 
   assert.match(page, /async function refreshAll\(trigger: MonitoringTrigger\)/);
   assert.match(page, /previous\.source === "official" && current\.source === "official"/);
   assert.match(page, /compareRecord\(previous, current, trigger\)/);
+  assert.match(page, /setRegister\(refreshed\)/);
+  assert.match(page, /onClick=\{\(\) => void refreshAll\("manual"\)\}[\s\S]*Check all ABNs now/);
+  assert.doesNotMatch(page, /Update now/);
   assert.match(page, /filter\(\(change\) => Boolean\(change\.trigger\)\)/);
   assert.match(page, /Weekly automatic check/);
   assert.doesNotMatch(page, /Daily automatic check|Simulate a GST change|refreshAll\(false\)|refreshAll\(true\)/);

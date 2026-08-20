@@ -1,4 +1,4 @@
-import { parseWorkspaceState, publicWorkspace, registerUsage } from "../../../server/database";
+import { loadWorkspaceState, publicWorkspace, registerUsage } from "../../../server/database";
 import { sessionFromRequest } from "../../../server/session";
 
 export async function GET(request: Request) {
@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   );
   const googleClientId = googleConfigured ? process.env.GOOGLE_CLIENT_ID!.trim() : "";
   if (!session) return Response.json({ authenticated: false, googleConfigured, googleClientId });
-  const state = parseWorkspaceState(session.workspace.state_json);
+  const state = await loadWorkspaceState(session.workspace);
   return Response.json({
     authenticated: true,
     googleConfigured: true,

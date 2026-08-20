@@ -1,4 +1,5 @@
 import { database, publicWorkspace } from "../../../server/database";
+import { recordRouteError } from "../../../server/monitoring";
 import { planForPriceId } from "../../../server/plans";
 import { sessionFromRequest } from "../../../server/session";
 import { stripeGet } from "../../../server/stripe";
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
     const updatedWorkspace = { ...session.workspace, plan, subscription_status: status, stripe_subscription_id: subscriptionId, stripe_price_id: priceId, current_period_end: periodEnd };
     return Response.json({ workspace: publicWorkspace(updatedWorkspace, 0) });
   } catch (error) {
+    await recordRouteError(request, "stripe_sync_error", error);
     return Response.json({ error: error instanceof Error ? error.message : "Stripe subscription could not be confirmed." }, { status: 400 });
   }
 }

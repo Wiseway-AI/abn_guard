@@ -27,6 +27,19 @@ test("server-renders the ABN Guard application shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
+  assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
+  assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin-allow-popups");
+  assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(\)/);
+  const contentSecurityPolicy = response.headers.get("content-security-policy") ?? "";
+  assert.match(contentSecurityPolicy, /default-src 'self'/);
+  assert.match(contentSecurityPolicy, /object-src 'none'/);
+  assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
+  assert.match(contentSecurityPolicy, /script-src[^;]+https:\/\/accounts\.google\.com\/gsi\/client/);
+  assert.match(contentSecurityPolicy, /frame-src https:\/\/accounts\.google\.com\/gsi\//);
+  assert.doesNotMatch(contentSecurityPolicy, /'unsafe-eval'/);
 
   const html = await response.text();
   assert.match(html, /<html lang="en-AU">/i);
@@ -50,13 +63,15 @@ test("keeps service credentials on the server", async () => {
   assert.match(accountRoute, /process\.env\.ADMIN_PASSWORD/);
   assert.match(accountRoute, /process\.env\.BOW_PASSWORD/);
   assert.match(accountRoute, /process\.env\.GCGF_PASSWORD/);
+  assert.match(accountRoute, /process\.env\.JIAQI_PASSWORD/);
   assert.match(exampleEnv, /^ABN_LOOKUP_GUID=\s*$/m);
   assert.match(exampleEnv, /^ADMIN_PASSWORD=\s*$/m);
   assert.match(exampleEnv, /^BOW_PASSWORD=\s*$/m);
   assert.match(exampleEnv, /^GCGF_PASSWORD=\s*$/m);
+  assert.match(exampleEnv, /^JIAQI_PASSWORD=\s*$/m);
   assert.doesNotMatch(page, /process\.env\.ABN_LOOKUP_GUID/);
   assert.doesNotMatch(page, /process\.env\.ADMIN_PASSWORD/);
-  assert.doesNotMatch(page, /BOW_PASSWORD|GCGF_PASSWORD/);
+  assert.doesNotMatch(page, /BOW_PASSWORD|GCGF_PASSWORD|JIAQI_PASSWORD/);
 });
 
 test("presents Google and verified email as account-bound sign-in methods", async () => {
@@ -75,8 +90,16 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
   assert.match(page, /gsi\/client\?hl=en/);
   assert.match(page, /Google or email sign-in/);
   assert.match(page, /Create account with email/);
-  assert.match(page, /Up to 30 ABN \/ bank-detail records/);
-  assert.match(page, /Up to 500 ABN \/ bank-detail records/);
+  assert.match(page, /Up to 10 ABN \/ bank-detail records/);
+  assert.match(page, /Up to 100 ABN \/ bank-detail records/);
+  assert.match(page, /A\$<\/span>9\.90<small>\/month \+ GST<\/small>/);
+  assert.match(page, /Enterprise/);
+  assert.match(page, /Custom record limits and onboarding/);
+  assert.match(page, /Contact us/);
+  assert.match(page, /Verify directly with the payee/);
+  assert.match(page, /Do not rely only on the uploaded document/);
+  assert.doesNotMatch(page, /Official ABN Lookup connected/);
+  assert.doesNotMatch(page, /Documents stay in this browser/);
   assert.match(page, /Can not find your ABN\?/);
   assert.match(page, /https:\/\/abr\.business\.gov\.au\//);
   assert.match(credential, /upsertGoogleUser/);
@@ -106,7 +129,30 @@ test("opens Stripe Checkout without leaving the upgrade button stuck", async () 
 
   assert.doesNotMatch(checkoutRoute, /stripeRequest\("customers"/);
   assert.match(checkoutRoute, /checkoutParams\.set\("customer_email"/);
+  assert.match(checkoutRoute, /billing_address_collection: "required"/);
+  assert.match(checkoutRoute, /"automatic_tax\[enabled\]": "true"/);
   assert.match(syncRoute, /UPDATE users SET stripe_customer_id/);
   assert.match(page, /addEventListener\("pageshow", resetStripeNavigation\)/);
   assert.match(page, /controller\.abort\(\)/);
+});
+
+test("protects ABN lookups and publishes product trust pages", async () => {
+  const [abnRoute, webhookRoute, page, privacy, terms, feedback] = await Promise.all([
+    readFile(new URL("../app/api/abn/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/billing/webhook/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/terms/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/feedback/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(abnRoute, /sessionFromRequest/);
+  assert.match(abnRoute, /consumeRateLimit/);
+  assert.match(webhookRoute, /stripe_events/);
+  assert.match(webhookRoute, /stripe_event_created <= \?/);
+  assert.match(page, /Feedback & support/);
+  assert.match(page, /href="\/privacy"/);
+  assert.match(page, /href="\/terms"/);
+  assert.match(privacy, /Google for optional sign-in/);
+  assert.match(terms, /verification aid/);
+  assert.match(feedback, /storeFeedback/);
 });

@@ -43,6 +43,11 @@ export default defineConfig(async ({ command }) => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
+    // Clerk's keyless bootstrap uses Node file APIs; explicit keys are already
+    // supplied locally, so disable that bootstrap in the Cloudflare runtime.
+    define: {
+      "process.env.NEXT_PUBLIC_CLERK_KEYLESS_DISABLED": JSON.stringify("true"),
+    },
     server: isCodexSeatbeltSandbox
       ? { watch: { useFsEvents: false, usePolling: true } }
       : undefined,
