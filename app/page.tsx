@@ -10,7 +10,7 @@ import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type B
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 import { assessPdfText, mergeVlmExtractions, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_DOCUMENT_PAGES, VLM_MAX_IMAGE_EDGE, VLM_MAX_PAGES, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
-import { filesWithoutAbn, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "./invoice-batch";
+import { filesWithoutAbn, groupVerificationChecksByFile, mapWithConcurrency, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "./invoice-batch";
 import FeedbackDialog from "./components/FeedbackDialog";
 
 declare global {
@@ -1059,7 +1059,7 @@ export default function Home() {
     const filesWithVerificationTargets = new Set(detectedEntities.flatMap((entity) => entity.fileIds));
     return documents.filter((document) => !filesWithVerificationTargets.has(document.id));
   }, [documents, detectedEntities]);
-  const verificationItemCount = detectedEntities.length + missingAbnDocuments.length;
+  const verificationItemCount = documents.length;
   const verificationButtonLabel = `Verify ${verificationItemCount} invoice${verificationItemCount === 1 ? "" : "s"}`;
   const skippedOwnAbnCount = useMemo(() => {
     const ownAbn = onlyDigits(currentAccount?.ownAbn ?? "");
@@ -1084,6 +1084,8 @@ export default function Home() {
     const batchId = checks[0]?.batchId;
     return batchId ? checks.filter((check) => check.batchId === batchId) : [];
   }, [checks]);
+  const latestCheckGroups = useMemo(() => groupVerificationChecksByFile(latestChecks), [latestChecks]);
+  const activeResultChecks = latestCheckGroups[activeCheckIndex] ?? [];
   const todayDayGroups = useMemo(() => {
     const grouped = new Map<string, TodayReview[]>();
     todayReviews.forEach((item) => {
@@ -1101,8 +1103,8 @@ export default function Home() {
   const issueCount = latestChecks.filter((check) => isCheckSelectedPayee(check) && !checkIsVerified(check)).length;
 
   useEffect(() => {
-    setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0)));
-  }, [latestChecks.length]);
+    setActiveCheckIndex((current) => Math.min(current, Math.max(latestCheckGroups.length - 1, 0)));
+  }, [latestCheckGroups.length]);
 
   function addHistoryEntries(records: AbnRecord[], event: AbnHistoryEntry["event"]) {
     const entries = records.map((record) => ({
@@ -1442,9 +1444,7 @@ export default function Home() {
     }
     setIsParsing(true);
     setNotice("");
-    const parsed: ContractDocument[] = [];
-    let failed = 0;
-    for (const file of selection.accepted) {
+    const outcomes = await mapWithConcurrency(selection.accepted, 2, async (file): Promise<ContractDocument | null> => {
       try {
         const read = await readContract(file, true);
         const text = read.text;
@@ -1456,7 +1456,7 @@ export default function Home() {
         const verificationSelection = selectAbnsForVerification(abns, selectedPayeeAbns, currentAccount?.ownAbn);
         selectedPayeeAbns = verificationSelection.selectedPayeeAbns;
         await storeOriginalFile(currentAccount.id, id, file);
-        parsed.push({
+        return {
           id,
           name: file.name,
           url: URL.createObjectURL(file),
@@ -1470,11 +1470,13 @@ export default function Home() {
           processingWarnings: read.warnings,
           requiresManualReview: read.requiresManualReview,
           uploadedAt: new Date().toISOString(),
-        });
+        };
       } catch {
-        failed += 1;
+        return null;
       }
-    }
+    });
+    const parsed = outcomes.filter((document): document is ContractDocument => Boolean(document));
+    const failed = outcomes.length - parsed.length;
     setDocuments((previous) => [...previous, ...parsed]);
     setIsParsing(false);
     const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
@@ -1797,13 +1799,13 @@ export default function Home() {
     }
     const unreviewedMissingAbns = payeeChecks.filter((check) => check.missingAbn && !check.reviewed);
     if (unreviewedMissingAbns.length) {
-      setActiveCheckIndex(Math.max(0, latestChecks.findIndex((check) => check.id === unreviewedMissingAbns[0].id)));
+      setActiveCheckIndex(Math.max(0, latestCheckGroups.findIndex((group) => group.some((check) => check.id === unreviewedMissingAbns[0].id))));
       setNotice(`Review ${unreviewedMissingAbns[0].fileName} and tick Reviewed before completing this batch.`);
       return;
     }
     const missingBankSelections = payeeChecks.filter(bankSelectionMissing);
     if (missingBankSelections.length) {
-      setActiveCheckIndex(Math.max(0, latestChecks.findIndex((check) => check.id === missingBankSelections[0].id)));
+      setActiveCheckIndex(Math.max(0, latestCheckGroups.findIndex((group) => group.some((check) => check.id === missingBankSelections[0].id))));
       setNotice(`Choose the bank account to save for ${missingBankSelections[0].official.entityName || formatAbn(missingBankSelections[0].abn)} before completing this batch.`);
       return;
     }
@@ -2217,8 +2219,8 @@ export default function Home() {
             </article>
 
             <article className="panel results-panel">
-              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Review" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
-              {!latestChecks.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{latestChecks.slice(activeCheckIndex, activeCheckIndex + 1).map((check) => {
+              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestCheckGroups.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestCheckGroups.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestCheckGroups.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestCheckGroups.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Review" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
+              {!latestCheckGroups.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{activeResultChecks.map((check) => {
                 const safeContractName = check.contractName && check.contractName.length <= 120 ? check.contractName : "Not found in file";
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
                 const officialLocation = [check.official.state, check.official.postcode].filter(Boolean).join(" ");

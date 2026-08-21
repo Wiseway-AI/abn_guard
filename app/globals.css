@@ -99,7 +99,7 @@ button { color: inherit; }
 .empty-state > span { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: #edf5f0; color: var(--green); font-size: 20px; }
 .empty-state h3 { color: var(--ink); margin: 13px 0 6px; font-family: Georgia, "Songti SC", serif; font-size: 16px; }
 .empty-state p { font-size: 10px; line-height: 1.6; max-width: 280px; margin: 0; }
-.check-list { display: block; overflow: visible; }
+.check-list { display: grid; gap: 16px; overflow: visible; }
 .result-navigation { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
 .result-navigation > span { min-width: 48px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; }
 .result-navigation button { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border: 1px solid #d8e1dc; border-radius: 8px; background: white; color: #46564f; font-size: 18px; line-height: 1; cursor: pointer; }
