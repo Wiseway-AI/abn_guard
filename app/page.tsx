@@ -510,6 +510,7 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
     }
     const localText = pages.join("\n");
     const assessment = assessPdfText(pages);
+    if (!assessment.needsVlm) return { text: localText, processing: "browser", warnings: [], requiresManualReview: false };
     if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: assessment.needsVlm };
     try {
       const extraction: VlmDocumentExtraction = await extractWithVlm(file, pdf, pages);
@@ -1444,7 +1445,7 @@ export default function Home() {
     }
     setIsParsing(true);
     setNotice("");
-    const outcomes = await mapWithConcurrency(selection.accepted, 2, async (file): Promise<ContractDocument | null> => {
+    const outcomes = await mapWithConcurrency(selection.accepted, 4, async (file): Promise<ContractDocument | null> => {
       try {
         const read = await readContract(file, true);
         const text = read.text;
@@ -2210,7 +2211,7 @@ export default function Home() {
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add invoices</h2></div><small>Up to 10 per batch</small></div>
               <div className={isDragging ? "dropzone dragging" : "dropzone"} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setIsDragging(false); void handleFiles(Array.from(event.dataTransfer.files)); }} onClick={() => fileRef.current?.click()}>
-                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · PDFs use private VLM extraction</small>
+                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · VLM fallback for scanned PDFs</small>
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
               <div className="file-recognition-summary"><span>Invoices uploaded{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""}{missingAbnDocuments.length ? ` · ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} need ABN review` : ""} · {verificationItemCount} result{verificationItemCount === 1 ? "" : "s"}</small>}</span><strong>{documents.length} / {MAX_INVOICE_BATCH_FILES}</strong></div>

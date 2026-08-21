@@ -37,7 +37,7 @@ test("keeps one result per file and stacks multiple ABN checks inside it", () =>
   assert.deepEqual(groups[1].map((check) => check.id), ["b-1"]);
 });
 
-test("processes invoice extraction two at a time while preserving file order", async () => {
+test("honours extraction concurrency while preserving file order", async () => {
   let active = 0;
   let maximumActive = 0;
   const results = await mapWithConcurrency([1, 2, 3, 4], 2, async (value) => {
@@ -68,6 +68,7 @@ test("keeps every uploaded invoice represented and verifies every ABN returned f
   assert.match(page, /verificationSelection\.verificationAbns\.map\(\(abn\)/);
   assert.match(page, /groupVerificationChecksByFile\(latestChecks\)/);
   assert.match(page, /activeResultChecks\.map\(\(check\)/);
+  assert.match(page, /mapWithConcurrency\(selection\.accepted, 4/);
   assert.match(page, /check\.contractAddress \|\| check\.contractLocation/);
   assert.match(page, /fileIds: \[document\.id\]/);
   assert.match(page, /fileNames: \[document\.name\]/);

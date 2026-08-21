@@ -77,6 +77,7 @@ test("keeps the active VLM implementation server-side without exposing credentia
 
   assert.match(page, /assessPdfText/);
   assert.match(page, /readContract\(file, true\)/);
+  assert.match(page, /if \(!assessment\.needsVlm\) return \{ text: localText, processing: "browser"/);
   assert.doesNotMatch(page, /Private VLM fallback|VLM fallback awaiting connection/);
   assert.doesNotMatch(page, /process\.env\.VLM_API_KEY|process\.env\.VLM_API_URL/);
   assert.match(route, /sessionFromRequest\(request\)/);
