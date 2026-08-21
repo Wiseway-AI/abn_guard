@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     const cloudSession = await sessionFromRequest(request);
     const managedSession = cloudSession ? null : await managedSessionFromRequest(request);
     if (!cloudSession && !managedSession) return Response.json({ error: "Sign in to use VLM document extraction." }, { status: 401 });
-    if (!configured()) return Response.json({ error: "VLM fallback is not configured." }, { status: 503 });
+    if (!configured()) return Response.json({ error: "VLM extraction is not configured." }, { status: 503 });
 
     const actorKey = cloudSession ? `workspace:${cloudSession.workspace.id}` : `managed:${managedSession!.managedAccountId}`;
     const rateLimit = await consumeRateLimit("vlm_extract", actorKey, 200, 60 * 60);
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     const upstreamBody = {
       model: clean(process.env.VLM_MODEL) || "qwen3-vl:4b",
       temperature: 0,
-      max_tokens: 4096,
+      max_tokens: 1600,
       reasoning_effort: "none",
       response_format: { type: "json_object" },
       messages: [

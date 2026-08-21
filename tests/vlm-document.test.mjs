@@ -77,7 +77,8 @@ test("keeps the active VLM implementation server-side without exposing credentia
 
   assert.match(page, /assessPdfText/);
   assert.match(page, /readContract\(file, true\)/);
-  assert.match(page, /if \(!assessment\.needsVlm\) return \{ text: localText, processing: "browser"/);
+  assert.doesNotMatch(page, /if \(!assessment\.needsVlm\) return \{ text: localText, processing: "browser"/);
+  assert.match(page, /toDataURL\("image\/jpeg", 0\.72\)/);
   assert.doesNotMatch(page, /Private VLM fallback|VLM fallback awaiting connection/);
   assert.doesNotMatch(page, /process\.env\.VLM_API_KEY|process\.env\.VLM_API_URL/);
   assert.match(route, /sessionFromRequest\(request\)/);
@@ -85,6 +86,7 @@ test("keeps the active VLM implementation server-side without exposing credentia
   assert.match(route, /message\.content \|\| message\.reasoning/);
   assert.match(route, /reasoning_effort: "none"/);
   assert.match(route, /response_format: \{ type: "json_object" \}/);
+  assert.match(route, /max_tokens: 1600/);
   assert.match(route, /process\.env\.VLM_API_URL/);
   assert.match(route, /ngrok-skip-browser-warning/);
   assert.match(route, /consumeRateLimit\("vlm_extract"/);

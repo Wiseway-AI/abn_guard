@@ -1,6 +1,6 @@
 export const VLM_MAX_PAGES = 4;
 export const VLM_MAX_DOCUMENT_PAGES = 40;
-export const VLM_MAX_IMAGE_EDGE = 1600;
+export const VLM_MAX_IMAGE_EDGE = 1280;
 
 export type VlmDocumentEntity = {
   abn: string;

@@ -64,11 +64,14 @@ test("requires missing-ABN invoices to be reviewed without saving them to Record
 test("keeps every uploaded invoice represented and verifies every ABN returned for it", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
-  assert.match(page, /return documents\.flatMap\(\(document\)/);
+  assert.match(page, /documents\.flatMap\(detectedEntitiesForDocument\)/);
   assert.match(page, /verificationSelection\.verificationAbns\.map\(\(abn\)/);
   assert.match(page, /groupVerificationChecksByFile\(latestChecks\)/);
   assert.match(page, /activeResultChecks\.map\(\(check\)/);
-  assert.match(page, /mapWithConcurrency\(selection\.accepted, 4/);
+  assert.match(page, /mapWithConcurrency\(selection\.accepted, 2/);
+  assert.match(page, /setDocuments\(\(previous\) => \[\.\.\.previous, parsedDocument\]\)/);
+  assert.match(page, /verificationCheckForDetected\(detected, progressiveBatchId, \[parsedDocument\]\)/);
+  assert.match(page, /Processing invoices… \$\{documents\.length\} complete/);
   assert.match(page, /check\.contractAddress \|\| check\.contractLocation/);
   assert.match(page, /fileIds: \[document\.id\]/);
   assert.match(page, /fileNames: \[document\.name\]/);
