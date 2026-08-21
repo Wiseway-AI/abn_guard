@@ -33,6 +33,6 @@
     "GOOGLE_CLIENT_ID": "935832651296-31gf3fi5242sq2g6smh1kldfdo1c0eoo.apps.googleusercontent.com",
     "STRIPE_STARTER_PRICE_ID": "price_1U6MzSBxIBEy9Vo6Jerxkyvo",
     "CONTACT_TO_EMAIL": "percival@wiseway.ai",
-    "VLM_MODEL": "local-vlm"
+    "VLM_MODEL": "qwen3-vl:4b"
   }
 }

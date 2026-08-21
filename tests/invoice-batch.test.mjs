@@ -34,10 +34,12 @@ test("requires missing-ABN invoices to be reviewed without saving them to Record
   assert.match(page, /<MissingAbnVerification/);
 });
 
-test("creates one verification result per uploaded invoice instead of merging by ABN", async () => {
+test("keeps every uploaded invoice represented and verifies every ABN returned for it", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
   assert.match(page, /return documents\.flatMap\(\(document\)/);
+  assert.match(page, /verificationSelection\.verificationAbns\.map\(\(abn\)/);
+  assert.match(page, /check\.contractAddress \|\| check\.contractLocation/);
   assert.match(page, /fileIds: \[document\.id\]/);
   assert.match(page, /fileNames: \[document\.name\]/);
   assert.doesNotMatch(page, /map\.get\(abn\)|map\.set\(abn/);

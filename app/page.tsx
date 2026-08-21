@@ -9,7 +9,7 @@ import { accountFileKey, accountStorageKey } from "./account-scope";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
-import { assessPdfText, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_IMAGE_EDGE, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
+import { assessPdfText, mergeVlmExtractions, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_DOCUMENT_PAGES, VLM_MAX_IMAGE_EDGE, VLM_MAX_PAGES, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
 import { filesWithoutAbn, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "./invoice-batch";
 import FeedbackDialog from "./components/FeedbackDialog";
 
@@ -121,6 +121,7 @@ type ContractDocument = {
   selectedPayeeAbns: string[];
   payeeSelection: "automatic" | "manual" | "unresolved";
   processing: "browser" | "vlm";
+  vlmExtraction?: VlmDocumentExtraction;
   processingWarnings: string[];
   requiresManualReview: boolean;
   uploadedAt: string;
@@ -134,6 +135,7 @@ type BankDetailsCandidate = {
 type DetectedEntity = {
   abn: string;
   contractName: string;
+  contractAddress?: string;
   fileIds: string[];
   fileNames: string[];
   context: string;
@@ -150,6 +152,7 @@ type ContractCheck = {
   checkedAt: string;
   abn: string;
   contractName: string;
+  contractAddress?: string;
   contractLocation?: string;
   contractGst: boolean | null;
   contractStatus: "Active" | "Cancelled" | null;
@@ -447,41 +450,50 @@ function compareRecord(previous: AbnRecord, current: AbnRecord, trigger: Monitor
 type ContractReadResult = {
   text: string;
   processing: "browser" | "vlm";
+  vlmExtraction?: VlmDocumentExtraction;
   warnings: string[];
   requiresManualReview: boolean;
 };
 
 async function extractWithVlm(file: File, pdf: PDFDocumentProxy, pageTexts: string[]) {
-  const pages = [] as { pageNumber: number; mimeType: "image/jpeg"; data: string }[];
-  for (const pageNumber of selectVlmPageNumbers(pdf.numPages)) {
-    const page = await pdf.getPage(pageNumber);
-    const baseViewport = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, VLM_MAX_IMAGE_EDGE / Math.max(baseViewport.width, baseViewport.height));
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(viewport.width));
-    canvas.height = Math.max(1, Math.round(viewport.height));
-    const canvasContext = canvas.getContext("2d", { alpha: false });
-    if (!canvasContext) throw new Error("This browser cannot render PDF pages for VLM extraction.");
-    canvasContext.fillStyle = "#ffffff";
-    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvas, canvasContext, viewport }).promise;
-    pages.push({
-      pageNumber,
-      mimeType: "image/jpeg",
-      data: canvas.toDataURL("image/jpeg", 0.82).replace(/^data:image\/jpeg;base64,/, ""),
+  if (pdf.numPages > VLM_MAX_DOCUMENT_PAGES) throw new Error(`VLM extraction supports invoices up to ${VLM_MAX_DOCUMENT_PAGES} pages.`);
+  const pageNumbers = selectVlmPageNumbers(pdf.numPages, VLM_MAX_DOCUMENT_PAGES);
+  const extractions: VlmDocumentExtraction[] = [];
+  for (let batchStart = 0; batchStart < pageNumbers.length; batchStart += VLM_MAX_PAGES) {
+    const pages = [] as { pageNumber: number; mimeType: "image/jpeg"; data: string }[];
+    const batchPageNumbers = pageNumbers.slice(batchStart, batchStart + VLM_MAX_PAGES);
+    for (const pageNumber of batchPageNumbers) {
+      const page = await pdf.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, VLM_MAX_IMAGE_EDGE / Math.max(baseViewport.width, baseViewport.height));
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const canvasContext = canvas.getContext("2d", { alpha: false });
+      if (!canvasContext) throw new Error("This browser cannot render PDF pages for VLM extraction.");
+      canvasContext.fillStyle = "#ffffff";
+      canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, canvasContext, viewport }).promise;
+      pages.push({
+        pageNumber,
+        mimeType: "image/jpeg",
+        data: canvas.toDataURL("image/jpeg", 0.82).replace(/^data:image\/jpeg;base64,/, ""),
+      });
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+    const batchText = batchPageNumbers.map((pageNumber) => `PDF page ${pageNumber}\n${pageTexts[pageNumber - 1] ?? ""}`).join("\n\n");
+    const response = await fetch("/api/vlm/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, existingText: batchText, pages }),
     });
-    canvas.width = 1;
-    canvas.height = 1;
+    const result = await response.json() as { extraction?: unknown; error?: string };
+    if (!response.ok) throw new Error(result.error || "VLM document extraction failed.");
+    extractions.push(normalizeVlmExtraction(result.extraction));
   }
-  const response = await fetch("/api/vlm/extract", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fileName: file.name, existingText: pageTexts.join("\n"), pages }),
-  });
-  const result = await response.json() as { extraction?: unknown; error?: string };
-  if (!response.ok) throw new Error(result.error || "VLM document extraction failed.");
-  return normalizeVlmExtraction(result.extraction);
+  return mergeVlmExtractions(extractions);
 }
 
 async function readContract(file: File, vlmEnabled: boolean): Promise<ContractReadResult> {
@@ -498,8 +510,7 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
     }
     const localText = pages.join("\n");
     const assessment = assessPdfText(pages);
-    if (!assessment.needsVlm) return { text: localText, processing: "browser", warnings: [], requiresManualReview: false };
-    if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: true };
+    if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: assessment.needsVlm };
     try {
       const extraction: VlmDocumentExtraction = await extractWithVlm(file, pdf, pages);
       const vlmText = vlmExtractionToText(extraction);
@@ -507,17 +518,18 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
       return {
         text: [localText, vlmText].filter(Boolean).join("\n\n"),
         processing: "vlm",
-        warnings: [...assessment.reasons, ...extraction.warnings],
+        vlmExtraction: extraction,
+        warnings: extraction.warnings,
         requiresManualReview: extraction.confidence < 0.8
-          || extraction.entities.some((entity) => entity.confidence < 0.75 || entity.role === "unknown")
+          || extraction.entities.some((entity) => entity.confidence < 0.75)
           || extraction.warnings.length > 0,
       };
     } catch (error) {
       return {
         text: localText,
         processing: "browser",
-        warnings: [...assessment.reasons, error instanceof Error ? error.message : "VLM fallback failed."],
-        requiresManualReview: true,
+        warnings: [...assessment.reasons, error instanceof Error ? error.message : "VLM extraction failed."],
+        requiresManualReview: assessment.needsVlm,
       };
     }
   }
@@ -1022,21 +1034,23 @@ export default function Home() {
     return documents.flatMap((document): DetectedEntity[] => {
       const documentBankDetails = extractBankDetails(document.text);
       const verificationSelection = selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn);
-      const abn = verificationSelection.selectedPayeeAbns[0] ?? verificationSelection.verificationAbns[0];
-      if (!abn) return [];
-      const context = contextForAbn(document.text, abn);
-      const bankDetailCandidates = documentBankDetails && (document.selectedPayeeAbns.includes(abn) || verificationSelection.verificationAbns.length === 1)
-        ? [{ details: documentBankDetails, fileNames: [document.name] }]
-        : [];
-      return [{
-        abn,
-        contractName: claimsFromContext(context).contractName,
-        fileIds: [document.id],
-        fileNames: [document.name],
-        context,
-        uploadedAt: document.uploadedAt,
-        bankDetailCandidates,
-      }];
+      return verificationSelection.verificationAbns.map((abn) => {
+        const context = contextForAbn(document.text, abn);
+        const vlmEntity = document.vlmExtraction?.entities.find((entity) => entity.abn === abn);
+        const bankDetailCandidates = documentBankDetails && verificationSelection.verificationAbns.length === 1
+          ? [{ details: documentBankDetails, fileNames: [document.name] }]
+          : [];
+        return {
+          abn,
+          contractName: vlmEntity?.entityName || claimsFromContext(context).contractName,
+          contractAddress: vlmEntity?.address,
+          fileIds: [document.id],
+          fileNames: [document.name],
+          context,
+          uploadedAt: document.uploadedAt,
+          bankDetailCandidates,
+        };
+      });
     });
   }, [documents, currentAccount?.ownAbn]);
 
@@ -1432,7 +1446,7 @@ export default function Home() {
     let failed = 0;
     for (const file of selection.accepted) {
       try {
-        const read = await readContract(file, false);
+        const read = await readContract(file, true);
         const text = read.text;
         const id = crypto.randomUUID();
         const abns = extractAbns(text);
@@ -1452,6 +1466,7 @@ export default function Home() {
           selectedPayeeAbns,
           payeeSelection: selectedPayeeAbns.length ? "automatic" : "unresolved",
           processing: read.processing,
+          vlmExtraction: read.vlmExtraction,
           processingWarnings: read.warnings,
           requiresManualReview: read.requiresManualReview,
           uploadedAt: new Date().toISOString(),
@@ -1605,6 +1620,7 @@ export default function Home() {
           fileBankDetailCandidates: detected.bankDetailCandidates,
           savedBankDetails,
           bankDetailStatus,
+          contractAddress: detected.contractAddress,
           ...claims,
         });
       } catch (error) {
@@ -1641,6 +1657,7 @@ export default function Home() {
           savedBankDetails,
           bankDetailStatus: "not-found",
           lookupFailed: true,
+          contractAddress: detected.contractAddress,
           ...claims,
         });
       }
@@ -2090,7 +2107,7 @@ export default function Home() {
           <small>Prices are in Australian dollars and exclude GST where applicable. Cancel or change Starter through the secure Stripe billing portal.</small>
         </section>
 
-        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files are processed directly in your browser.</p><div><span><b>01</b>Browser-first document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
+        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and PDF pages are sent only to the configured private extraction endpoint during verification.</p><div><span><b>01</b>Private VLM document extraction</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
 
         <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><SignUpButton mode="modal" forceRedirectUrl="/app/check"><button type="button" className="landing-primary light">Join now — it’s free <span>→</span></button></SignUpButton><small>No credit card required · Set up in minutes</small></section>
 
@@ -2191,7 +2208,7 @@ export default function Home() {
             <article className="panel contract-panel">
               <div className="panel-heading"><div><span className="step">1</span><h2>Add invoices</h2></div><small>Up to 10 per batch</small></div>
               <div className={isDragging ? "dropzone dragging" : "dropzone"} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setIsDragging(false); void handleFiles(Array.from(event.dataTransfer.files)); }} onClick={() => fileRef.current?.click()}>
-                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · processed in this browser</small>
+                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · PDFs use private VLM extraction</small>
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
               <div className="file-recognition-summary"><span>Invoices uploaded{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""}{missingAbnDocuments.length ? ` · ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} need ABN review` : ""} · {verificationItemCount} result{verificationItemCount === 1 ? "" : "s"}</small>}</span><strong>{documents.length} / {MAX_INVOICE_BATCH_FILES}</strong></div>
@@ -2223,7 +2240,7 @@ export default function Home() {
                       <dl>
                         <div><dt>Entity name</dt><dd className="file-entity-value">{editingCheckNameId === check.id ? <form className="entity-name-editor" onSubmit={(event) => { event.preventDefault(); saveCheckName(check.id); }}><input autoFocus value={checkNameDraft} onChange={(event) => setCheckNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") cancelEditingCheckName(); }} aria-label="Detected entity name" /><button type="submit" aria-label="Save detected entity name">Save</button><button type="button" onClick={cancelEditingCheckName} aria-label="Cancel entity name edit">Cancel</button></form> : <><span>{safeContractName}</span><button type="button" onClick={() => startEditingCheckName(check)}>Edit</button></>}</dd></div>
                         <div><dt>ABN</dt><dd>{formatAbn(check.abn)}</dd></div>
-                        <div><dt>Location</dt><dd>{check.contractLocation || "Not found in file"}</dd></div>
+                        <div><dt>Address</dt><dd>{check.contractAddress || check.contractLocation || "Not found in file"}</dd></div>
                       </dl>
                     </section>
                     <section className="evidence-panel lookup-evidence">
