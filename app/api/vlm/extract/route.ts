@@ -46,7 +46,7 @@ function extractMessageContent(payload: unknown) {
   const choices = Array.isArray(response.choices) ? response.choices : [];
   const first = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : {};
   const message = first.message && typeof first.message === "object" ? first.message as Record<string, unknown> : {};
-  const content = message.content ?? response.response;
+  const content = message.content || message.reasoning || response.response;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map((part) => part && typeof part === "object" ? clean((part as Record<string, unknown>).text) : "").filter(Boolean).join("\n");
   return "";
@@ -107,6 +107,8 @@ export async function POST(request: Request) {
       model: clean(process.env.VLM_MODEL) || "qwen3-vl:4b",
       temperature: 0,
       max_tokens: 4096,
+      reasoning_effort: "none",
+      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: QWEN3_VL_ABN_SYSTEM_PROMPT },
         { role: "user", content },

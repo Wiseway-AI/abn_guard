@@ -81,6 +81,9 @@ test("keeps the active VLM implementation server-side without exposing credentia
   assert.doesNotMatch(page, /process\.env\.VLM_API_KEY|process\.env\.VLM_API_URL/);
   assert.match(route, /sessionFromRequest\(request\)/);
   assert.match(route, /QWEN3_VL_ABN_SYSTEM_PROMPT/);
+  assert.match(route, /message\.content \|\| message\.reasoning/);
+  assert.match(route, /reasoning_effort: "none"/);
+  assert.match(route, /response_format: \{ type: "json_object" \}/);
   assert.match(route, /process\.env\.VLM_API_URL/);
   assert.match(route, /ngrok-skip-browser-warning/);
   assert.match(route, /consumeRateLimit\("vlm_extract"/);
