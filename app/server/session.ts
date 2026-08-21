@@ -7,6 +7,7 @@ const encoder = new TextEncoder();
 
 export type SessionPayload = { userId: string; version: number; exp: number };
 export type ManagedSessionPayload = { managedAccountId: string; exp: number };
+type SessionOptions = { onClerkError?: (error: unknown) => void };
 
 function secret() {
   const value = process.env.SESSION_SECRET?.trim();
@@ -86,7 +87,7 @@ export async function managedSessionFromRequest(request: Request) {
   }
 }
 
-export async function sessionFromRequest(request: Request) {
+export async function sessionFromRequest(request: Request, options: SessionOptions = {}) {
   try {
     const { auth, currentUser } = await import("@clerk/nextjs/server");
     const clerkAuth = await auth();
@@ -96,7 +97,10 @@ export async function sessionFromRequest(request: Request) {
       const clerkUser = await currentUser();
       const primaryEmail = clerkUser?.primaryEmailAddress;
       const email = primaryEmail?.emailAddress?.trim().toLowerCase();
-      if (!clerkUser || !email || primaryEmail?.verification?.status !== "verified") return null;
+      if (!clerkUser) throw new Error("Clerk could not load the signed-in user.");
+      if (!email || primaryEmail?.verification?.status !== "verified") {
+        throw new Error("A verified primary email is required to create a workspace.");
+      }
       return upsertClerkUser({
         clerkUserId: clerkUser.id,
         email,
@@ -104,7 +108,8 @@ export async function sessionFromRequest(request: Request) {
         picture: clerkUser.imageUrl || "",
       });
     }
-  } catch {
+  } catch (error) {
+    options.onClerkError?.(error);
     // Keep legacy sessions working while Clerk is being configured or during migration.
   }
   try {

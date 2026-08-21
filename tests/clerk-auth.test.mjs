@@ -24,12 +24,16 @@ test("integrates Clerk with visible controls and workspace-scoped D1 identities"
   assert.match(page, /SignInButton/);
   assert.match(page, /SignUpButton/);
   assert.match(page, /className="account-signout"[\s\S]*Sign out/);
-  assert.match(page, /isLoaded: clerkLoaded, isSignedIn: clerkSignedIn/);
-  assert.match(page, /\[clerkLoaded, clerkSignedIn\]/);
+  assert.match(page, /isLoaded: clerkLoaded, isSignedIn: clerkSignedIn, getToken: getClerkToken/);
+  assert.match(page, /Authorization: `Bearer \$\{clerkToken\}`/);
+  assert.match(page, /const attempts = clerkSignedIn \? 4 : 1/);
+  assert.match(page, /We couldn’t open your workspace/);
+  assert.match(page, /\[clerkLoaded, clerkSignedIn, getClerkToken\]/);
   assert.match(page, /!clerkSignedIn && !currentAccount && isAppPath/);
   assert.doesNotMatch(page, /CLERK_SECRET_KEY/);
 
   assert.match(session, /const clerkAuth = await auth\(\)/);
+  assert.match(session, /options\.onClerkError\?\.\(error\)/);
   assert.match(session, /primaryEmail\?\.verification\?\.status !== "verified"/);
   assert.match(database, /WHERE clerk_user_id = \?/);
   assert.match(database, /existingEmail/);

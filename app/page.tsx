@@ -10,6 +10,7 @@ import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type B
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
 import { assessPdfText, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_IMAGE_EDGE, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
+import { filesWithoutAbn, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "./invoice-batch";
 import FeedbackDialog from "./components/FeedbackDialog";
 
 declare global {
@@ -160,6 +161,8 @@ type ContractCheck = {
   selectedBankDetailKey?: string;
   savedBankDetails?: BankDetails;
   bankDetailStatus: "not-found" | "first-seen" | "match" | "mismatch" | "multiple";
+  missingAbn?: boolean;
+  lookupFailed?: boolean;
 };
 
 type TodayFileRef = {
@@ -179,6 +182,7 @@ type TodayReview = {
   issues: string[];
   official: AbnRecord;
   files?: TodayFileRef[];
+  missingAbn?: boolean;
 };
 
 type ChangeLog = {
@@ -578,6 +582,26 @@ function BankVerification({ check, onSelectCandidate }: { check: ContractCheck; 
   </div>;
 }
 
+function MissingAbnVerification({ check, documents, onReviewed }: { check: ContractCheck; documents: ContractDocument[]; onReviewed: (reviewed: boolean) => void }) {
+  return <div className="check-card missing-abn-check">
+    <div className="check-card-top">
+      <div><small>SUPPLIER ABN NOT FOUND</small><h3>{check.fileName}</h3><p className="role-confidence">No supplier ABN was available for verification in this invoice.</p></div>
+      <div className="check-result-actions">
+        <span className="payee-role-pill missing">Manual check</span>
+        <span className={check.reviewed ? "result-pill ok" : "result-pill issue"}>{check.reviewed ? "Reviewed" : "Verification required"}</span>
+        <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => onReviewed(event.target.checked)} /><span>Reviewed</span></label>
+      </div>
+    </div>
+    <div className="missing-abn-verification">
+      <section className="evidence-panel file-evidence">
+        <div className="evidence-title"><span>FILE</span><div><b>Invoice requiring review</b><small className="file-source-links">{documents.length ? documents.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
+        <dl><div><dt>Entity name</dt><dd>{check.contractName || "Not found in file"}</dd></div><div><dt>ABN</dt><dd className="missing-value">Not found in file</dd></div></dl>
+      </section>
+      <section className="missing-abn-action" role="alert"><span>!</span><div><h4>Manual verification required</h4><p>Open the original invoice and confirm the supplier’s ABN before payment. Tick Reviewed only after checking the source document or obtaining a corrected invoice.</p></div></section>
+    </div>
+  </div>;
+}
+
 function bankSelectionMissing(check: ContractCheck) {
   return check.bankDetailStatus === "multiple" && !check.selectedBankDetailKey;
 }
@@ -587,7 +611,7 @@ function checkRequiresReview(check: ContractCheck) {
 }
 
 function checkIsVerified(check: ContractCheck) {
-  return !bankSelectionMissing(check) && (!checkRequiresReview(check) || check.reviewed);
+  return !check.lookupFailed && !bankSelectionMissing(check) && (!checkRequiresReview(check) || check.reviewed);
 }
 
 function isEntityNameIssue(issue: string) {
@@ -610,9 +634,9 @@ function TodaySection({ title, items, onVerify, onOpenFile }: { title: string; i
       <thead><tr><th>File</th><th>Name / ABN</th><th>ABN status</th><th>GST status</th><th>Uploaded</th><th>Issues</th><th>Review</th></tr></thead>
       <tbody>{items.map((item) => <tr key={item.id}>
         <td>{item.files?.length ? <div className="today-file-links">{item.files.map((file) => <button type="button" key={file.id} onClick={() => onOpenFile(file)} title={`Open ${file.name}`}>{file.name}</button>)}</div> : <b>{item.fileName || "—"}</b>}</td>
-        <td><b>{item.official.entityName || "Name unavailable"}</b><small>{formatAbn(item.official.abn)}</small></td>
-        <td><span className={item.official.status === "Active" ? "status-dot active" : item.official.status === "Cancelled" ? "status-dot cancelled" : "status-dot"}>{item.official.status}</span><small>{item.official.statusFrom || "—"}</small></td>
-        <td><b className={item.official.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.official.gstRegistered === null ? "Pending" : item.official.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.official.gstFrom || "—"}</small></td>
+        <td><b>{item.missingAbn ? "ABN not found" : item.official.entityName || "Name unavailable"}</b><small>{item.missingAbn ? "Manual invoice review" : formatAbn(item.official.abn)}</small></td>
+        <td>{item.missingAbn ? <><span className="status-dot">Not available</span><small>No ABN in file</small></> : <><span className={item.official.status === "Active" ? "status-dot active" : item.official.status === "Cancelled" ? "status-dot cancelled" : "status-dot"}>{item.official.status}</span><small>{item.official.statusFrom || "—"}</small></>}</td>
+        <td>{item.missingAbn ? <><b className="gst-status">Not checked</b><small>ABN required</small></> : <><b className={item.official.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.official.gstRegistered === null ? "Pending" : item.official.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.official.gstFrom || "—"}</small></>}</td>
         <td><span>{dateTime(item.uploadedAt)}</span></td>
         <td><span className={item.issues.length && item.status === "double-check" ? "today-issues open" : "today-issues"}>{item.issues.length ? item.status === "verified" ? `${item.issues.length} reviewed` : `${item.issues.length} issue${item.issues.length === 1 ? "" : "s"}` : "None"}</span>{item.issues[0] && <small title={item.issues.join(" · ")}>{item.issues[0]}</small>}</td>
         <td>{onVerify ? <button className="today-verify" type="button" onClick={() => onVerify(item.id)}>Verify</button> : <span className="today-verified">✓ Verified</span>}</td>
@@ -622,7 +646,7 @@ function TodaySection({ title, items, onVerify, onOpenFile }: { title: string; i
 }
 
 export default function Home() {
-  const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn } = useAuth();
+  const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn, getToken: getClerkToken } = useAuth();
   const { signOut: clerkSignOut } = useClerk();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [currentAccount, setCurrentAccount] = useState<Account | null>(null);
@@ -670,6 +694,7 @@ export default function Home() {
   const [checkNameDraft, setCheckNameDraft] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [cloudWorkspaceReady, setCloudWorkspaceReady] = useState(false);
+  const [clerkWorkspaceError, setClerkWorkspaceError] = useState("");
   const [googleConfigured, setGoogleConfigured] = useState(false);
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleSigningIn, setGoogleSigningIn] = useState(false);
@@ -681,24 +706,41 @@ export default function Home() {
   useEffect(() => {
     if (!clerkLoaded) return;
     setHydrated(false);
+    setClerkWorkspaceError("");
     let cancelled = false;
     async function hydrate() {
       const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
       setAccounts(storedAccounts);
       try {
-        const sessionResponse = await fetch("/api/auth/session");
-        const session = await sessionResponse.json() as {
+        const clerkToken = clerkSignedIn ? await getClerkToken() : null;
+        let sessionResponse: Response | null = null;
+        let session: {
           authenticated?: boolean;
           googleConfigured?: boolean;
           googleClientId?: string;
+          error?: string;
           user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" | "clerk" };
           workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
-        };
+        } = {};
+        const attempts = clerkSignedIn ? 4 : 1;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          sessionResponse = await fetch("/api/auth/session", {
+            cache: "no-store",
+            headers: clerkToken ? { Authorization: `Bearer ${clerkToken}` } : undefined,
+          });
+          session = await sessionResponse.json() as typeof session;
+          if (session.authenticated || !clerkSignedIn) break;
+          if (attempt < attempts - 1) await new Promise((resolve) => window.setTimeout(resolve, 300 * (attempt + 1)));
+        }
         if (cancelled) return;
         setGoogleConfigured(Boolean(session.googleConfigured));
         setGoogleClientId(session.googleClientId ?? "");
         if (session.authenticated && session.user && session.workspace) {
-          const workspaceResponse = await fetch("/api/workspace");
+          const workspaceResponse = await fetch("/api/workspace", {
+            cache: "no-store",
+            headers: clerkToken ? { Authorization: `Bearer ${clerkToken}` } : undefined,
+          });
+          if (!workspaceResponse.ok) throw new Error("Your workspace data could not be loaded. Please try again.");
           const workspaceResult = await workspaceResponse.json() as { state?: CloudWorkspaceState };
           const savedAccount = workspaceResult.state?.account ?? {};
           const account: Account = {
@@ -729,12 +771,22 @@ export default function Home() {
           setChecks([]);
           setCloudWorkspaceReady(true);
         } else {
+          if (clerkSignedIn) {
+            throw new Error(session.error || "Your sign-in succeeded, but the workspace could not be opened. Please try again.");
+          }
           const sessionId = localStorage.getItem(STORAGE.session);
           const active = storedAccounts.find((account) => account.id === sessionId) ?? null;
           setCurrentAccount(active);
           if (active) loadAccountData(active.id);
         }
-      } catch {
+      } catch (error) {
+        if (cancelled) return;
+        if (clerkSignedIn) {
+          setCurrentAccount(null);
+          setCloudWorkspaceReady(false);
+          setClerkWorkspaceError(error instanceof Error ? error.message : "Your workspace could not be opened. Please try again.");
+          return;
+        }
         const sessionId = localStorage.getItem(STORAGE.session);
         const active = storedAccounts.find((account) => account.id === sessionId) ?? null;
         setCurrentAccount(active);
@@ -746,7 +798,7 @@ export default function Home() {
     }
     void hydrate();
     return () => { cancelled = true; };
-  }, [clerkLoaded, clerkSignedIn]);
+  }, [clerkLoaded, clerkSignedIn, getClerkToken]);
 
   useEffect(() => {
     if (!showAuth || authStage !== "credentials" || !googleConfigured || !googleClientId) return;
@@ -967,38 +1019,34 @@ export default function Home() {
   }
 
   const detectedEntities = useMemo(() => {
-    const map = new Map<string, DetectedEntity>();
-    documents.forEach((document) => {
+    return documents.flatMap((document): DetectedEntity[] => {
       const documentBankDetails = extractBankDetails(document.text);
       const verificationSelection = selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn);
-      verificationSelection.verificationAbns.forEach((abn) => {
-        const context = contextForAbn(document.text, abn);
-        const name = claimsFromContext(context).contractName;
-        const existing = map.get(abn);
-        const bankDetailCandidates = new Map((existing?.bankDetailCandidates ?? []).map((candidate) => [bankDetailsKey(candidate.details), candidate]));
-        if (documentBankDetails && document.selectedPayeeAbns.includes(abn)) {
-          const key = bankDetailsKey(documentBankDetails);
-          const previousCandidate = bankDetailCandidates.get(key);
-          bankDetailCandidates.set(key, {
-            details: documentBankDetails,
-            fileNames: [...new Set([...(previousCandidate?.fileNames ?? []), document.name])],
-          });
-        }
-        map.set(abn, {
-          abn,
-          contractName: existing?.contractName || name,
-          fileIds: [...new Set([...(existing?.fileIds ?? []), document.id])],
-          fileNames: [...new Set([...(existing?.fileNames ?? []), document.name])],
-          context: existing?.context || context,
-          uploadedAt: existing?.uploadedAt || document.uploadedAt,
-          bankDetailCandidates: [...bankDetailCandidates.values()],
-        });
-      });
+      const abn = verificationSelection.selectedPayeeAbns[0] ?? verificationSelection.verificationAbns[0];
+      if (!abn) return [];
+      const context = contextForAbn(document.text, abn);
+      const bankDetailCandidates = documentBankDetails && (document.selectedPayeeAbns.includes(abn) || verificationSelection.verificationAbns.length === 1)
+        ? [{ details: documentBankDetails, fileNames: [document.name] }]
+        : [];
+      return [{
+        abn,
+        contractName: claimsFromContext(context).contractName,
+        fileIds: [document.id],
+        fileNames: [document.name],
+        context,
+        uploadedAt: document.uploadedAt,
+        bankDetailCandidates,
+      }];
     });
-    return [...map.values()];
   }, [documents, currentAccount?.ownAbn]);
 
   const detectedDocumentAbns = useMemo(() => [...new Set(documents.flatMap((document) => document.abns))], [documents]);
+  const missingAbnDocuments = useMemo(() => {
+    const filesWithVerificationTargets = new Set(detectedEntities.flatMap((entity) => entity.fileIds));
+    return documents.filter((document) => !filesWithVerificationTargets.has(document.id));
+  }, [documents, detectedEntities]);
+  const verificationItemCount = detectedEntities.length + missingAbnDocuments.length;
+  const verificationButtonLabel = `Verify ${verificationItemCount} invoice${verificationItemCount === 1 ? "" : "s"}`;
   const skippedOwnAbnCount = useMemo(() => {
     const ownAbn = onlyDigits(currentAccount?.ownAbn ?? "");
     return ownAbn && detectedDocumentAbns.includes(ownAbn) ? 1 : 0;
@@ -1373,50 +1421,26 @@ export default function Home() {
 
   async function handleFiles(files: File[]) {
     if (!files.length) return;
+    const selection = selectInvoiceBatchFiles(documents.length, files);
+    if (!selection.accepted.length) {
+      setNotice(`A verification batch can contain up to ${MAX_INVOICE_BATCH_FILES} invoices. Complete the current batch before uploading more.`);
+      return;
+    }
     setIsParsing(true);
     setNotice("");
     const parsed: ContractDocument[] = [];
     let failed = 0;
-    for (const file of files) {
+    for (const file of selection.accepted) {
       try {
         const read = await readContract(file, false);
         const text = read.text;
         const id = crypto.randomUUID();
         const abns = extractAbns(text);
         const roleAnalysis = classifyAbnRoles(text, abns, currentAccount?.ownAbn);
-        let abnRoles = roleAnalysis.candidates;
+        const abnRoles = roleAnalysis.candidates;
         let selectedPayeeAbns = roleAnalysis.selectedPayeeAbns;
-        const abnEntityNames: Record<string, string> = {};
-        if (abns.length > 1) {
-          const officialResults = await Promise.allSettled(abns.map((abn) => lookupAbn(abn)));
-          officialResults.forEach((result, index) => {
-            if (result.status === "fulfilled" && result.value.entityName) abnEntityNames[abns[index]] = result.value.entityName;
-          });
-          const accountName = extractBankDetails(text)?.accountName ?? "";
-          const accountMatches = accountName
-            ? abns.filter((abn) => abnEntityNames[abn] && compareCompanyNames(accountName, abnEntityNames[abn]) !== "mismatch")
-            : [];
-          if (accountMatches.length === 1) {
-            selectedPayeeAbns = accountMatches;
-            abnRoles = abnRoles.map((candidate) => candidate.abn === accountMatches[0]
-              ? { ...candidate, role: "payee", confidence: Math.max(candidate.confidence, 0.94), reasons: [...candidate.reasons, "Bank account name matches the ABN Lookup entity"] }
-              : candidate);
-          }
-        }
-        const selectedCounterpartyBeforeWorkspaceRule = selectedPayeeAbns.some((abn) => onlyDigits(abn) !== onlyDigits(currentAccount?.ownAbn ?? ""));
         const verificationSelection = selectAbnsForVerification(abns, selectedPayeeAbns, currentAccount?.ownAbn);
         selectedPayeeAbns = verificationSelection.selectedPayeeAbns;
-        if (!selectedCounterpartyBeforeWorkspaceRule && verificationSelection.skippedOwnAbns.length && selectedPayeeAbns.length === 1) {
-          const counterpartyAbn = selectedPayeeAbns[0];
-          abnRoles = abnRoles.map((candidate) => candidate.abn === counterpartyAbn
-            ? {
-                ...candidate,
-                role: "payee" as const,
-                confidence: Math.max(candidate.confidence, 0.9),
-                reasons: ["Only counterparty ABN after excluding this workspace", ...candidate.reasons.filter((reason) => reason !== "No clear payer or payee label found")],
-              }
-            : candidate);
-        }
         await storeOriginalFile(currentAccount.id, id, file);
         parsed.push({
           id,
@@ -1426,7 +1450,7 @@ export default function Home() {
           abns,
           abnRoles,
           selectedPayeeAbns,
-          payeeSelection: selectedPayeeAbns.length === 1 ? "automatic" : "unresolved",
+          payeeSelection: selectedPayeeAbns.length ? "automatic" : "unresolved",
           processing: read.processing,
           processingWarnings: read.warnings,
           requiresManualReview: read.requiresManualReview,
@@ -1439,16 +1463,18 @@ export default function Home() {
     setDocuments((previous) => [...previous, ...parsed]);
     setIsParsing(false);
     const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
+    const withoutAbn = filesWithoutAbn(parsed);
     const unreadableFallbacks = parsed.filter((item) => item.processing === "browser" && item.processingWarnings.length).length;
     const parsedOwnAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).skippedOwnAbns))];
     const parsedVerificationAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).verificationAbns))];
     const ownAbnMessage = parsedOwnAbns.length
       ? ` ${parsedOwnAbns.length} workspace ABN${parsedOwnAbns.length === 1 ? " was" : "s were"} skipped; ${parsedVerificationAbns.length} counterparty ABN${parsedVerificationAbns.length === 1 ? " is" : "s are"} ready to verify.`
       : "";
-    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}.${ownAbnMessage}${unreadableFallbacks ? ` ${unreadableFallbacks} PDF${unreadableFallbacks === 1 ? " needs" : "s need"} manual review because local extraction was incomplete.` : ""}${failed ? ` ${failed} file${failed === 1 ? "" : "s"} could not be read.` : ""}`);
+    setNotice(`Added ${parsed.length} invoice${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}.${withoutAbn.length ? ` ${withoutAbn.length} file${withoutAbn.length === 1 ? " has" : "s have"} no valid ABN and will require manual verification.` : ""}${ownAbnMessage}${unreadableFallbacks ? ` ${unreadableFallbacks} PDF${unreadableFallbacks === 1 ? " needs" : "s need"} manual review because local extraction was incomplete.` : ""}${failed ? ` ${failed} file${failed === 1 ? "" : "s"} could not be read.` : ""}${selection.rejectedCount ? ` ${selection.rejectedCount} additional file${selection.rejectedCount === 1 ? " was" : "s were"} not added because the batch limit is ${MAX_INVOICE_BATCH_FILES}.` : ""}`);
   }
 
   function isCheckSelectedPayee(check: ContractCheck) {
+    if (check.missingAbn) return true;
     return documents.some((document) => check.fileIds.includes(document.id) && document.selectedPayeeAbns.includes(check.abn));
   }
 
@@ -1516,16 +1542,16 @@ export default function Home() {
       const { bankIssues, ...bankVerification } = bank;
       return { ...item, ...bankVerification, issues: [...issuesWithoutBank, ...bankIssues], reviewed: false };
     }));
-    setNotice(`${check.official.entityName || formatAbn(check.abn)} selected as the payee. Bank details will only be linked to this ABN.`);
+    setNotice(`${check.official.entityName || formatAbn(check.abn)} selected for verification. Bank details will only be linked to this ABN.`);
   }
 
   async function verifyContracts() {
-    if (!detectedEntities.length) {
-      setNotice("No valid 11-digit ABN was found in the uploaded contracts.");
+    if (!verificationItemCount) {
+      setNotice("No counterparty ABN or invoice requiring manual ABN review was found in the uploaded files.");
       return;
     }
     setBusy(true);
-    setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}…`);
+    setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? ` and preparing ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} without an ABN for manual review` : ""}…`);
     const batchId = crypto.randomUUID();
     const nextChecks: ContractCheck[] = [];
     const failedLookups: { abn: string; message: string }[] = [];
@@ -1582,17 +1608,87 @@ export default function Home() {
           ...claims,
         });
       } catch (error) {
-        failedLookups.push({ abn: detected.abn, message: error instanceof Error ? error.message : "Lookup failed" });
+        const message = error instanceof Error ? error.message : "Lookup failed";
+        failedLookups.push({ abn: detected.abn, message });
+        const claims = { ...claimsFromContext(detected.context), contractName: detected.contractName };
+        const savedBankDetails = register.find((record) => record.abn === detected.abn)?.bankDetails;
+        nextChecks.push({
+          id: crypto.randomUUID(),
+          batchId,
+          fileName: detected.fileNames[0],
+          fileIds: detected.fileIds,
+          uploadedAt: detected.uploadedAt,
+          checkedAt: new Date().toISOString(),
+          abn: detected.abn,
+          official: {
+            abn: detected.abn,
+            entityName: "Official lookup unavailable",
+            status: "Unknown",
+            statusFrom: "",
+            gstRegistered: null,
+            gstFrom: "",
+            entityType: "",
+            state: "",
+            postcode: "",
+            lastChecked: new Date().toISOString(),
+            source: "pending",
+            bankDetails: savedBankDetails,
+          },
+          issues: [`Official ABN lookup failed: ${message}. Review this invoice and try verification again.`],
+          reviewed: false,
+          fileBankDetails: detected.bankDetailCandidates[0]?.details,
+          fileBankDetailCandidates: detected.bankDetailCandidates,
+          savedBankDetails,
+          bankDetailStatus: "not-found",
+          lookupFailed: true,
+          ...claims,
+        });
       }
+    }
+    for (const document of missingAbnDocuments) {
+      const claims = claimsFromContext(document.text);
+      const missingAbnIssue = document.abns.length
+        ? "No counterparty ABN was found in this file. Confirm the supplier’s ABN before payment."
+        : "No valid ABN was found in this file. Confirm the supplier’s ABN before payment.";
+      nextChecks.push({
+        id: crypto.randomUUID(),
+        batchId,
+        fileName: document.name,
+        fileIds: [document.id],
+        uploadedAt: document.uploadedAt,
+        checkedAt: new Date().toISOString(),
+        abn: "",
+        contractName: claims.contractName,
+        contractLocation: claims.contractLocation,
+        contractGst: claims.contractGst,
+        contractStatus: claims.contractStatus,
+        official: {
+          abn: "",
+          entityName: claims.contractName || "ABN not found",
+          status: "Unknown",
+          statusFrom: "",
+          gstRegistered: null,
+          gstFrom: "",
+          entityType: "",
+          state: "",
+          postcode: "",
+          lastChecked: new Date().toISOString(),
+          source: "pending",
+        },
+        issues: [missingAbnIssue],
+        reviewed: false,
+        bankDetailStatus: "not-found",
+        missingAbn: true,
+      });
     }
     setChecks((previous) => [...nextChecks, ...previous].slice(0, 100));
     setActiveCheckIndex(0);
     setBusy(false);
     if (failedLookups.length) {
       const failedSummary = failedLookups.map((failure) => `${formatAbn(failure.abn)} (${failure.message})`).join("; ");
-      setNotice(`Verification completed for ${nextChecks.length} of ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}. ${failedLookups.length} lookup${failedLookups.length === 1 ? "" : "s"} failed: ${failedSummary}`);
+      setNotice(`Verification completed for ${detectedEntities.length - failedLookups.length} of ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? `, with ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} requiring manual ABN review` : ""}. ${failedLookups.length} lookup${failedLookups.length === 1 ? "" : "s"} failed: ${failedSummary}`);
     } else {
-      setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}. Review the suggested payee before completing this batch.`);
+      setNotice(`Verification complete: ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? ` and ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} without an ABN` : ""}. Review every flagged item before completing this batch.`);
     }
   }
 
@@ -1679,7 +1775,13 @@ export default function Home() {
     if (!latestChecks.length) return;
     const payeeChecks = latestChecks.filter(isCheckSelectedPayee);
     if (!payeeChecks.length) {
-      setNotice("Select at least one payee ABN before completing this batch.");
+      setNotice("Select at least one invoice ABN before completing this batch.");
+      return;
+    }
+    const unreviewedMissingAbns = payeeChecks.filter((check) => check.missingAbn && !check.reviewed);
+    if (unreviewedMissingAbns.length) {
+      setActiveCheckIndex(Math.max(0, latestChecks.findIndex((check) => check.id === unreviewedMissingAbns[0].id)));
+      setNotice(`Review ${unreviewedMissingAbns[0].fileName} and tick Reviewed before completing this batch.`);
       return;
     }
     const missingBankSelections = payeeChecks.filter(bankSelectionMissing);
@@ -1700,9 +1802,10 @@ export default function Home() {
       status: checkIsVerified(check) ? "verified" : "double-check",
       issues: check.issues,
       official: check.official,
+      missingAbn: check.missingAbn,
       files: check.fileIds.map((fileId) => documents.find((document) => document.id === fileId)).filter((document): document is ContractDocument => Boolean(document)).map((document) => ({ id: document.id, name: document.name })),
     }));
-    const eligibleVerifiedRecords = payeeChecks.filter(checkIsVerified).map((check) => check.official);
+    const eligibleVerifiedRecords = [...new Map(payeeChecks.filter((check) => !check.missingAbn && checkIsVerified(check)).map((check) => [check.official.abn, check.official])).values()];
     const verifiedRecords = recordsWithinQuota(eligibleVerifiedRecords);
     setTodayReviews((previous) => [...completed, ...previous].slice(0, 500));
     addVerifiedRecords(verifiedRecords);
@@ -1714,13 +1817,22 @@ export default function Home() {
     setCheckNameDraft("");
     if (fileRef.current) fileRef.current.value = "";
     const doubleChecks = completed.filter((item) => item.status === "double-check").length;
+    const manuallyReviewedMissingAbns = completed.filter((item) => item.missingAbn).length;
     const quotaSkipped = eligibleVerifiedRecords.length - verifiedRecords.length;
-    setNotice(quotaSkipped ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}` : `Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Review for double check` : ""}.`);
+    setNotice(quotaSkipped
+      ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}`
+      : `Batch completed: ${verifiedRecords.length} verified ABN record${verifiedRecords.length === 1 ? "" : "s"} saved${manuallyReviewedMissingAbns ? `, ${manuallyReviewedMissingAbns} invoice${manuallyReviewedMissingAbns === 1 ? "" : "s"} without an ABN manually reviewed` : ""}${doubleChecks ? `, ${doubleChecks} sent to Review for double check` : ""}.`);
   }
 
   function verifyTodayReview(reviewId: string) {
     const review = todayReviews.find((item) => item.id === reviewId);
     if (!review || review.status === "verified") return;
+    if (review.missingAbn) {
+      const verifiedAt = new Date().toISOString();
+      setTodayReviews((previous) => previous.map((item) => item.id === reviewId ? { ...item, status: "verified", verifiedAt } : item));
+      setNotice(`${review.fileName || "Invoice"} marked as manually reviewed. No ABN record was added.`);
+      return;
+    }
     if (!register.some((item) => item.abn === review.official.abn) && availableAbnSlots() <= 0) {
       setNotice(quotaMessage());
       return;
@@ -1897,6 +2009,21 @@ export default function Home() {
 
   if (!hydrated) return <div className="app-loading">Loading ABN Guard…</div>;
 
+  if (!currentAccount && clerkSignedIn && clerkWorkspaceError) {
+    return <main className="auth-recovery-shell">
+      <section className="auth-recovery-card" role="alert">
+        <div className="auth-modal-brand"><span>A</span><strong>ABN Guard</strong></div>
+        <p className="eyebrow">WORKSPACE CONNECTION</p>
+        <h1>We couldn’t open your workspace</h1>
+        <p>{clerkWorkspaceError}</p>
+        <div className="auth-recovery-actions">
+          <button className="primary-button" type="button" onClick={() => window.location.reload()}>Try again<span>↻</span></button>
+          <button type="button" onClick={() => void signOut()}>Sign out</button>
+        </div>
+      </section>
+    </main>;
+  }
+
   if (!currentAccount) {
     const openAuth = (mode: "signin" | "register") => {
       setAuthMode(mode);
@@ -2062,13 +2189,14 @@ export default function Home() {
           <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{isCloudAccount(currentAccount) && <em> / {currentAccount.abnLimit ?? 10}</em>}</strong><small>{isCloudAccount(currentAccount) ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
-              <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>
+              <div className="panel-heading"><div><span className="step">1</span><h2>Add invoices</h2></div><small>Up to 10 per batch</small></div>
               <div className={isDragging ? "dropzone dragging" : "dropzone"} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setIsDragging(false); void handleFiles(Array.from(event.dataTransfer.files)); }} onClick={() => fileRef.current?.click()}>
-                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading contracts…" : "Drop contracts here, or click to browse"}</strong><small>Upload multiple PDF, DOCX or TXT files · processed in this browser</small>
+                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · processed in this browser</small>
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
-              <div className="file-recognition-summary"><span>Files recognised{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""} · {detectedEntities.length} to verify</small>}</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
-              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : `Verify ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
+              <div className="file-recognition-summary"><span>Invoices uploaded{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""}{missingAbnDocuments.length ? ` · ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} need ABN review` : ""} · {verificationItemCount} result{verificationItemCount === 1 ? "" : "s"}</small>}</span><strong>{documents.length} / {MAX_INVOICE_BATCH_FILES}</strong></div>
+              {missingAbnDocuments.length > 0 && <div className="missing-abn-file-list" role="alert"><span>!</span><div><b>Supplier ABN not found</b><small>{missingAbnDocuments.map((document) => document.name).join(", ")}</small></div></div>}
+              <button className="primary-button" disabled={busy || isParsing || !verificationItemCount} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : verificationButtonLabel}<span>→</span></button>
             </article>
 
             <article className="panel results-panel">
@@ -2078,16 +2206,17 @@ export default function Home() {
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
                 const officialLocation = [check.official.state, check.official.postcode].filter(Boolean).join(" ");
                 const sourceDocuments = documents.filter((document) => check.fileIds?.includes(document.id));
+                if (check.missingAbn) return <MissingAbnVerification key={check.id} check={check} documents={sourceDocuments} onReviewed={(reviewed) => setCheckReviewed(check.id, reviewed)} />;
                 const isSelectedPayee = isCheckSelectedPayee(check);
                 const roleCandidate = sourceDocuments.flatMap((document) => document.abnRoles).filter((candidate) => candidate.abn === check.abn).sort((left, right) => right.confidence - left.confidence)[0];
                 const manuallySelected = isSelectedPayee && sourceDocuments.some((document) => document.selectedPayeeAbns.includes(check.abn) && document.payeeSelection === "manual");
-                const roleLabel = isSelectedPayee ? manuallySelected ? "Selected payee" : "Suggested payee" : roleCandidate?.role === "payer" ? "Customer / ignored" : "Not selected";
+                const roleLabel = isSelectedPayee ? "Invoice ABN" : roleCandidate?.role === "payer" ? "Your ABN / skipped" : "Not selected";
                 const nameComparison = safeContractName === "Not found in file" || !check.official.entityName ? null : compareCompanyNames(safeContractName, check.official.entityName);
                 const abnMatch = onlyDigits(check.abn) === onlyDigits(check.official.abn);
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
                 const isVerified = checkIsVerified(check);
                 return <div className={isSelectedPayee && !isVerified ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Review required"}</span>{checkRequiresReview(check) && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : roleCandidate.reasons[0]}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Verify this ABN</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Review required"}</span>{checkRequiresReview(check) && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
@@ -2120,7 +2249,7 @@ export default function Home() {
         {tab === "today" && <div className="page-content today-page">
           <div className="today-summary">
             <article className="panel"><span className="today-summary-icon attention">!</span><div><small>Double check</small><strong>{doubleCheckItems.length}</strong><p>Items still waiting for a decision</p></div></article>
-            <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved and saved to Records</p></div></article>
+            <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved checks and saved records</p></div></article>
           </div>
           <div className="today-day-list">{todayDayGroups.map(({ day, items }) => {
             const isCurrent = day === todayDayKey;
