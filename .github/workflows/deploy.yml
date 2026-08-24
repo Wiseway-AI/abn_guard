@@ -24,7 +24,7 @@ jobs:
       ECS_TASK_FAMILY: ${{ github.ref_name == 'production' && 'prod-abn-guard' || 'qa-abn-guard' }}
       APP_URL: ${{ github.ref_name == 'production' && 'https://abn-guard.wiseway.ai' || 'https://qa-abn-guard.wiseway.ai' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
