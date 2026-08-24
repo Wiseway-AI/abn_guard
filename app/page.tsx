@@ -96,7 +96,7 @@ type Account = {
   unlimitedAbns?: boolean;
 };
 
-function isCloudAccount(account?: Account | null) {
+function isCloudAccount(account?: Account | null): account is Account & { authProvider: "google" | "email" | "clerk" } {
   return account?.authProvider === "google" || account?.authProvider === "email" || account?.authProvider === "clerk";
 }
 
@@ -680,7 +680,6 @@ export default function Home() {
 
   useEffect(() => {
     if (!clerkLoaded) return;
-    setHydrated(false);
     let cancelled = false;
     async function hydrate() {
       const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
@@ -817,9 +816,11 @@ export default function Home() {
     const googleAuthError = params.get("auth_error");
     const shouldOpenSignin = params.get("signin") === "1";
     if (googleAuthError || shouldOpenSignin) {
-      setAuthMode("signin");
-      if (googleAuthError) setAuthError(googleAuthError);
-      setShowAuth(true);
+      queueMicrotask(() => {
+        setAuthMode("signin");
+        if (googleAuthError) setAuthError(googleAuthError);
+        setShowAuth(true);
+      });
       params.delete("auth_error");
       params.delete("signin");
       const nextQuery = params.toString();
@@ -896,27 +897,34 @@ export default function Home() {
     params.delete("session_id");
     const nextQuery = params.toString();
     window.history.replaceState({}, "", `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ""}${window.location.hash}`);
-    if (billingResult === "cancelled") {
-      setNotice("Stripe Checkout was cancelled. Your current plan has not changed.");
-      return;
+    async function synchronizeBilling() {
+      await Promise.resolve();
+      if (billingResult === "cancelled") {
+        setNotice("Stripe Checkout was cancelled. Your current plan has not changed.");
+        return;
+      }
+      if (!checkoutSessionId) {
+        setNotice("Stripe returned without a Checkout session. Your subscription will update when the webhook arrives.");
+        return;
+      }
+      setBillingBusy(true);
+      try {
+        const response = await fetch("/api/billing/sync", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checkoutSessionId }),
+        });
+        const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
+        if (!response.ok || !result.workspace) throw new Error(result.error || "Stripe subscription could not be confirmed.");
+        setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
+        setNotice(`Starter is active. This workspace can now save up to ${result.workspace.abnLimit} ABN / bank-detail records.`);
+      } catch (error) {
+        setNotice(error instanceof Error ? error.message : "Stripe subscription could not be confirmed.");
+      } finally {
+        setBillingBusy(false);
+      }
     }
-    if (!checkoutSessionId) {
-      setNotice("Stripe returned without a Checkout session. Your subscription will update when the webhook arrives.");
-      return;
-    }
-    setBillingBusy(true);
-    void fetch("/api/billing/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ checkoutSessionId }),
-    }).then(async (response) => {
-      const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
-      if (!response.ok || !result.workspace) throw new Error(result.error || "Stripe subscription could not be confirmed.");
-      setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
-      setNotice(`Starter is active. This workspace can now save up to ${result.workspace.abnLimit} ABN / bank-detail records.`);
-    }).catch((error) => {
-      setNotice(error instanceof Error ? error.message : "Stripe subscription could not be confirmed.");
-    }).finally(() => setBillingBusy(false));
+    void synchronizeBilling();
   }, [cloudWorkspaceReady, currentAccount?.authProvider]);
 
   useEffect(() => {
@@ -1039,7 +1047,7 @@ export default function Home() {
   const issueCount = latestChecks.filter((check) => isCheckSelectedPayee(check) && !checkIsVerified(check)).length;
 
   useEffect(() => {
-    setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0)));
+    queueMicrotask(() => setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0))));
   }, [latestChecks.length]);
 
   function addHistoryEntries(records: AbnRecord[], event: AbnHistoryEntry["event"]) {
@@ -1372,7 +1380,8 @@ export default function Home() {
   }
 
   async function handleFiles(files: File[]) {
-    if (!files.length) return;
+    const account = currentAccount;
+    if (!files.length || !account) return;
     setIsParsing(true);
     setNotice("");
     const parsed: ContractDocument[] = [];
@@ -1417,7 +1426,7 @@ export default function Home() {
               }
             : candidate);
         }
-        await storeOriginalFile(currentAccount.id, id, file);
+        await storeOriginalFile(account.id, id, file);
         parsed.push({
           id,
           name: file.name,
@@ -1736,10 +1745,12 @@ export default function Home() {
   }
 
   async function openTodayFile(file: TodayFileRef) {
+    const account = currentAccount;
+    if (!account) return;
     const preview = window.open("about:blank", "_blank");
     if (preview) preview.opener = null;
     try {
-      const original = await loadOriginalFile(currentAccount.id, file.id);
+      const original = await loadOriginalFile(account.id, file.id);
       if (!original) throw new Error("Original file is unavailable");
       const url = URL.createObjectURL(original);
       if (preview) preview.location.href = url;
@@ -1825,7 +1836,7 @@ export default function Home() {
       const XLSX = await import("xlsx");
       const workbook = XLSX.read(await file.arrayBuffer());
       const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(workbook.Sheets[workbook.SheetNames[0]], { defval: "" });
-      const imported = rows.map((row) => {
+      const imported = rows.map<AbnRecord | null>((row) => {
         const rawAbn = row.ABN ?? row.abn ?? row["ABN号码"] ?? Object.values(row)[0];
         const abn = onlyDigits(String(rawAbn ?? ""));
         if (!isValidAbn(abn)) return null;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import QRCode from "qrcode";
 import { accountEnding, demoCertificate } from "./demo-certificate";
 import styles from "./badge-demo.module.css";
@@ -11,16 +12,14 @@ function roundedRect(context: CanvasRenderingContext2D, x: number, y: number, wi
 }
 
 export default function BadgeDemoPage() {
-  const [companyName, setCompanyName] = useState(demoCertificate.companyName);
-  const [invoiceReference, setInvoiceReference] = useState(demoCertificate.invoiceReference);
+  const [companyName, setCompanyName] = useState<string>(demoCertificate.companyName);
+  const [invoiceReference, setInvoiceReference] = useState<string>(demoCertificate.invoiceReference);
   const [qrDataUrl, setQrDataUrl] = useState("");
-  const [verificationUrl, setVerificationUrl] = useState("/verify/demo");
+  const verificationUrl = typeof window === "undefined" ? "/verify/demo" : `${window.location.origin}/verify/demo`;
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    const url = `${window.location.origin}/verify/demo`;
-    setVerificationUrl(url);
-    void QRCode.toDataURL(url, {
+    void QRCode.toDataURL(`${window.location.origin}/verify/demo`, {
       width: 280,
       margin: 1,
       color: { dark: "#163f33", light: "#ffffff" },
@@ -111,8 +110,8 @@ export default function BadgeDemoPage() {
   return (
     <main className={styles.page}>
       <header className={styles.header}>
-        <a className={styles.brand} href="/"><span>A</span><strong>ABN Guard</strong></a>
-        <a className={styles.backLink} href="/">Back to workspace</a>
+        <Link className={styles.brand} href="/"><span>A</span><strong>ABN Guard</strong></Link>
+        <Link className={styles.backLink} href="/">Back to workspace</Link>
       </header>
 
       <section className={styles.hero}>

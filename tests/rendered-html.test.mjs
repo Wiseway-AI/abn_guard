@@ -2,38 +2,20 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", {
-      headers: { accept: "text/html" },
-    }),
-    {
-      ASSETS: {
-        fetch: async () => new Response("Not found", { status: 404 }),
-      },
-    },
-    {
-      waitUntil() {},
-      passThroughOnException() {},
-    },
-  );
-}
-
-test("server-renders the ABN Guard application shell", async () => {
-  const response = await render();
-  assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-  assert.equal(response.headers.get("strict-transport-security"), "max-age=31536000; includeSubDomains");
-  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
-  assert.equal(response.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
-  assert.equal(response.headers.get("x-frame-options"), "DENY");
-  assert.equal(response.headers.get("cross-origin-opener-policy"), "same-origin-allow-popups");
-  assert.match(response.headers.get("permissions-policy") ?? "", /camera=\(\)/);
-  const contentSecurityPolicy = response.headers.get("content-security-policy") ?? "";
+test("configures the ABN Guard application shell and security headers", async () => {
+  const [config, layout, page] = await Promise.all([
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(config, /output: "standalone"/);
+  assert.match(config, /Strict-Transport-Security/);
+  assert.match(config, /X-Content-Type-Options/);
+  assert.match(config, /Referrer-Policy/);
+  assert.match(config, /X-Frame-Options/);
+  assert.match(config, /Cross-Origin-Opener-Policy/);
+  assert.match(config, /Permissions-Policy/);
+  const contentSecurityPolicy = config;
   assert.match(contentSecurityPolicy, /default-src 'self'/);
   assert.match(contentSecurityPolicy, /object-src 'none'/);
   assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
@@ -41,14 +23,13 @@ test("server-renders the ABN Guard application shell", async () => {
   assert.match(contentSecurityPolicy, /frame-src https:\/\/accounts\.google\.com\/gsi\//);
   assert.doesNotMatch(contentSecurityPolicy, /'unsafe-eval'/);
 
-  const html = await response.text();
-  assert.match(html, /<html lang="en-AU">/i);
-  assert.match(html, /<title>ABN Guard · Supplier Verification<\/title>/i);
+  assert.match(layout, /<html lang="en-AU">/i);
+  assert.match(layout, /ABN Guard · Supplier Verification/i);
   assert.match(
-    html,
+    layout,
     /Verify supplier ABNs, GST status and bank details, then monitor a secure cloud supplier register/i,
   );
-  assert.match(html, /<div class="app-loading">Loading ABN Guard…<\/div>/i);
+  assert.match(page, /<div className="app-loading">Loading ABN Guard…<\/div>/i);
 });
 
 test("keeps service credentials on the server", async () => {

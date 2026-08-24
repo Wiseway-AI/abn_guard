@@ -6,8 +6,8 @@ V2 runs separately from the current production version on the `codex/google-stri
 
 | Plan | Monthly price | Record limit |
 | --- | ---: | ---: |
-| Free trial | A$0 | 30 ABN / bank-detail records |
-| Starter | A$9.90 | 500 ABN / bank-detail records |
+| Free | A$0 | 10 ABN / bank-detail records |
+| Starter | A$9.90 + GST | 100 ABN / bank-detail records |
 
 The server enforces these limits when the workspace is saved, including records created by contract checks and Excel imports.
 
@@ -40,6 +40,6 @@ Save the webhook signing secret as `STRIPE_WEBHOOK_SECRET`. Enable subscription 
 
 ## Database
 
-V2 requires a Cloudflare D1 database bound as `DB`. Apply the migration in `drizzle/0000_unique_changeling.sql` before enabling Google sign-in.
+V2 requires PostgreSQL 16 or newer through `DATABASE_URL`. Apply `drizzle-pg` migrations with `npm run db:migrate` before enabling Google sign-in.
 
 The database stores users, isolated workspaces, subscription state, and workspace records. Original uploaded documents remain in the user's browser in this version.
