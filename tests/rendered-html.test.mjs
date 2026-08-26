@@ -102,9 +102,10 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
 });
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
-  const [page, checkoutRoute, syncRoute] = await Promise.all([
+  const [page, checkoutRoute, portalRoute, syncRoute] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/billing/checkout/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/billing/portal/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/billing/sync/route.ts", import.meta.url), "utf8"),
   ]);
 
@@ -112,6 +113,8 @@ test("opens Stripe Checkout without leaving the upgrade button stuck", async () 
   assert.match(checkoutRoute, /checkoutParams\.set\("customer_email"/);
   assert.match(checkoutRoute, /billing_address_collection: "required"/);
   assert.match(checkoutRoute, /"automatic_tax\[enabled\]": "true"/);
+  assert.match(portalRoute, /process\.env\.STRIPE_BILLING_PORTAL_CONFIGURATION_ID/);
+  assert.match(portalRoute, /configuration,/);
   assert.match(syncRoute, /UPDATE users SET stripe_customer_id/);
   assert.match(page, /addEventListener\("pageshow", resetStripeNavigation\)/);
   assert.match(page, /controller\.abort\(\)/);
