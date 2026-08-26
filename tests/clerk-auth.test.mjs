@@ -40,5 +40,7 @@ test("integrates Clerk with visible controls and PostgreSQL-scoped identities", 
   assert.match(nextConfig, /https:\/\/\*\.clerk\.accounts\.dev/);
   assert.match(dockerfile, /ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY/);
   assert.match(dockerfile, /ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=\$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY/);
-  assert.match(deployWorkflow, /NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=\$\{\{ vars\.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \}\}/);
+  assert.match(deployWorkflow, /NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=\$\{\{ secrets\.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY \}\}/);
+  assert.match(deployWorkflow, /runs-on: ubuntu-24\.04-arm/);
+  assert.doesNotMatch(deployWorkflow, /setup-qemu-action/);
 });
