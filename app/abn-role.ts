@@ -13,6 +13,13 @@ export type AbnRoleAnalysis = {
   requiresReview: boolean;
 };
 
+export type AbnVerificationSelection = {
+  verificationAbns: string[];
+  selectedPayeeAbns: string[];
+  skippedOwnAbns: string[];
+  excludedNonPayeeAbns: string[];
+};
+
 const payerLabels = [
   /\bbill\s+to\b/i,
   /\bcustomer\b/i,
@@ -121,5 +128,27 @@ export function classifyAbnRoles(text: string, abns: string[], ownAbn = ""): Abn
     candidates,
     selectedPayeeAbns,
     requiresReview: selectedPayeeAbns.length !== 1,
+  };
+}
+
+export function selectAbnsForVerification(abns: string[], selectedPayeeAbns: string[], ownAbn = ""): AbnVerificationSelection {
+  const uniqueAbns = [...new Set(abns.map(onlyDigits).filter(Boolean))];
+  const normalizedOwnAbn = onlyDigits(ownAbn);
+  const skippedOwnAbns = normalizedOwnAbn && uniqueAbns.includes(normalizedOwnAbn) ? [normalizedOwnAbn] : [];
+  const counterpartyAbns = uniqueAbns.filter((abn) => abn !== normalizedOwnAbn);
+  const explicitlySelected = [...new Set(selectedPayeeAbns.map(onlyDigits))]
+    .filter((abn) => counterpartyAbns.includes(abn));
+  const selected = explicitlySelected.length
+    ? explicitlySelected
+    : skippedOwnAbns.length && counterpartyAbns.length === 1
+      ? [counterpartyAbns[0]]
+      : [];
+  const verificationAbns = selected.length ? selected : counterpartyAbns;
+
+  return {
+    verificationAbns,
+    selectedPayeeAbns: selected,
+    skippedOwnAbns,
+    excludedNonPayeeAbns: counterpartyAbns.filter((abn) => !verificationAbns.includes(abn)),
   };
 }

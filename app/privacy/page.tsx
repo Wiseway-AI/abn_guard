@@ -1,0 +1,15 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+
+export const metadata: Metadata = { title: "Privacy Policy", description: "How ABN Guard collects, uses and protects information." };
+
+export default function PrivacyPage() {
+  return <main className="public-page"><nav className="public-page-nav"><Link className="public-brand" href="/"><span>A</span>ABN Guard</Link><div><Link href="/contact">Contact</Link><Link href="/terms">Terms</Link></div></nav><div className="public-page-main"><p>PRIVACY POLICY</p><h1>Clear handling of your supplier data.</h1><p className="lead">This policy explains what ABN Guard collects, why it is used and the choices available to you. Last updated 14 August 2026.</p>
+    <article><h2>Information we collect</h2><p>We collect account details you provide, including your name, company and email address; supplier register information you save; verification history; billing status; support messages; and basic security and service logs. Google sign-in provides your name, email and profile image only.</p></article>
+    <article><h2>Documents and supplier records</h2><p>Uploaded source files are processed in your browser and remain on that device unless you export or share them. Structured workspace data, such as ABNs, verification results and saved bank-detail comparisons, may be stored in our Cloudflare-hosted database so signed-in users can restore their workspace.</p></article>
+    <article><h2>How we use information</h2><ul><li>Provide ABN, GST and supplier-verification features.</li><li>Secure accounts, prevent misuse and resolve support requests.</li><li>Process subscriptions and maintain billing status.</li><li>Improve product reliability using aggregated operational information.</li></ul></article>
+    <article><h2>Service providers</h2><p>ABN Guard uses Cloudflare for hosting and data storage, AWS for domain delivery, Clerk and Google for optional sign-in, Stripe for billing, Resend for transactional email and the Australian Government ABN Lookup service for official ABN data. Each provider handles information under its own privacy terms.</p></article>
+    <article><h2>Retention, access and deletion</h2><p>We keep account and workspace information while your account is active and as needed for security, billing and legal obligations. Signed-in users can export supplier records, revoke all active sessions and permanently delete their account and workspace from Settings. Deletion is confirmed through the account email. Stripe may retain invoices and billing records where required for financial or legal purposes.</p></article>
+    <article><h2>Contact</h2><p>Privacy questions and requests can be sent through our <Link href="/contact">contact page</Link> or to <a href="mailto:percival@wiseway.ai">percival@wiseway.ai</a>.</p></article>
+  </div></main>;
+}
