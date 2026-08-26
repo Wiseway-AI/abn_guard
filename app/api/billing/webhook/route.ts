@@ -32,13 +32,14 @@ export async function POST(request: Request) {
     const eventCreated = typeof event.created === "number" ? event.created : 0;
     if (!eventId || !event.type) return Response.json({ error: "Stripe event is incomplete." }, { status: 400 });
     const db = await database();
-    const existing = await db.prepare("SELECT status FROM stripe_events WHERE id = ?").bind(eventId).first<{ status: string }>();
-    if (existing?.status === "processed") return Response.json({ received: true, duplicate: true });
     const now = new Date().toISOString();
-    await db.prepare(`INSERT INTO stripe_events (id, event_type, event_created, status, created_at)
+    const claim = await db.prepare(`INSERT INTO stripe_events (id, event_type, event_created, status, created_at)
       VALUES (?, ?, ?, 'processing', ?)
-      ON CONFLICT(id) DO UPDATE SET status = 'processing', error = NULL`)
-      .bind(eventId, event.type, eventCreated, now).run();
+      ON CONFLICT(id) DO UPDATE SET status = 'processing', error = NULL
+      WHERE stripe_events.status = 'failed'
+      RETURNING status`)
+      .bind(eventId, event.type, eventCreated, now).first<{ status: string }>();
+    if (!claim) return Response.json({ received: true, duplicate: true });
     const object = event.data?.object ?? {};
     if (event.type === "checkout.session.completed") {
       const workspaceId = nestedString(object, "metadata", "workspace_id");

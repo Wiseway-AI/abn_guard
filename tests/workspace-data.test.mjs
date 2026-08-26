@@ -46,7 +46,7 @@ test("defines authenticated app URLs and an additive workspace-data migration", 
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/app/[[...section]]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
-    readFile(new URL("../drizzle/0004_colorful_wong.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle-pg/0000_initial.sql", import.meta.url), "utf8"),
     readFile(new URL("../app/api/workspace/route.ts", import.meta.url), "utf8"),
   ]);
 
@@ -54,7 +54,7 @@ test("defines authenticated app URLs and an additive workspace-data migration", 
     assert.match(page, new RegExp(path.replaceAll("/", "\\/")));
   }
   assert.match(appRoute, /import Home from "\.\.\/\.\.\/page"/);
-  assert.match(schema, /workspaceData = sqliteTable\("workspace_data"/);
-  assert.match(migration, /CREATE TABLE `workspace_data`/);
+  assert.match(schema, /workspaceData = pgTable\("workspace_data"/);
+  assert.match(migration, /create table workspace_data/i);
   assert.match(workspaceRoute, /saveWorkspaceState/);
 });

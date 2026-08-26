@@ -7,7 +7,13 @@ export async function POST(request: Request) {
   if (!session) return Response.json({ error: "Sign in required." }, { status: 401 });
   if (!session.user.stripe_customer_id) return Response.json({ error: "No Stripe billing account exists for this workspace." }, { status: 400 });
   try {
-    const portal = await stripeRequest("billing_portal/sessions", new URLSearchParams({ customer: session.user.stripe_customer_id, return_url: `${absoluteAppUrl(request)}/app/settings` }));
+    const configuration = process.env.STRIPE_BILLING_PORTAL_CONFIGURATION_ID?.trim();
+    if (!configuration) throw new Error("Stripe billing portal is not configured.");
+    const portal = await stripeRequest("billing_portal/sessions", new URLSearchParams({
+      customer: session.user.stripe_customer_id,
+      return_url: `${absoluteAppUrl(request)}/app/settings`,
+      configuration,
+    }));
     return Response.json({ url: portal.url });
   } catch (error) {
     await recordRouteError(request, "stripe_portal_error", error);

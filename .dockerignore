@@ -1,0 +1,9 @@
+.git
+.github
+.next
+.codex-tmp
+node_modules
+.env*
+.wrangler
+coverage
+npm-debug.log*
