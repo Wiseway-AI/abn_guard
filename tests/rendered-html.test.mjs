@@ -20,6 +20,8 @@ test("configures the ABN Guard application shell and security headers", async ()
   assert.match(contentSecurityPolicy, /object-src 'none'/);
   assert.match(contentSecurityPolicy, /frame-ancestors 'none'/);
   assert.match(contentSecurityPolicy, /script-src[^;]+https:\/\/accounts\.google\.com\/gsi\/client/);
+  assert.match(contentSecurityPolicy, /script-src[^;]+https:\/\/clerk\.abn-guard\.wiseway\.ai/);
+  assert.match(contentSecurityPolicy, /connect-src[^;]+https:\/\/accounts\.abn-guard\.wiseway\.ai/);
   assert.match(contentSecurityPolicy, /frame-src https:\/\/accounts\.google\.com\/gsi\//);
   assert.doesNotMatch(contentSecurityPolicy, /'unsafe-eval'/);
 
