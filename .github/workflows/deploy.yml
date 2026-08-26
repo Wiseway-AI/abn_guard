@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     environment: ${{ github.ref_name == 'production' && 'production' || 'staging' }}
     env:
       AWS_REGION: ap-southeast-2
@@ -33,7 +33,6 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Check immutable image
         id: image
