@@ -50,7 +50,7 @@ export async function loginRateLimit(request: Request, scope: string, identifier
     const result = await consumeRateLimit(scope, actorHash, limit, windowSeconds);
     return { ...result, actorHash };
   } catch {
-    // Authentication already depends on D1 for public accounts. Managed beta
+    // Authentication already depends on PostgreSQL for public accounts. Managed beta
     // accounts remain available if the monitoring store has a transient issue.
     return { allowed: true, remaining: limit, resetAt: 0, actorHash };
   }

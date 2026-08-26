@@ -1,14 +1,56 @@
 import { PLANS, type PlanKey } from "./plans.ts";
+import postgres from "postgres";
+import { databaseUrlFromEnvironment } from "./database-url.ts";
 
-type D1Result<T = Record<string, unknown>> = { results?: T[]; success: boolean };
-type D1Statement = {
-  bind(...values: unknown[]): D1Statement;
-  first<T = Record<string, unknown>>(): Promise<T | null>;
-  run<T = Record<string, unknown>>(): Promise<D1Result<T>>;
-  all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
+type DatabaseResult<T = Record<string, unknown>> = { results?: T[]; success: boolean };
+type QueryExecutor = {
+  unsafe(query: string, values?: unknown[]): Promise<unknown[]>;
 };
-type D1DatabaseLike = { prepare(query: string): D1Statement; batch(statements: D1Statement[]): Promise<D1Result[]> };
-let operationalSchemaPromise: Promise<void> | null = null;
+type DatabaseStatement = {
+  bind(...values: unknown[]): DatabaseStatement;
+  first<T = Record<string, unknown>>(): Promise<T | null>;
+  run<T = Record<string, unknown>>(): Promise<DatabaseResult<T>>;
+  all<T = Record<string, unknown>>(): Promise<DatabaseResult<T>>;
+};
+type DatabaseLike = { prepare(query: string): DatabaseStatement; batch(statements: DatabaseStatement[]): Promise<DatabaseResult[]> };
+
+let postgresClient: ReturnType<typeof postgres> | null = null;
+let databaseAdapter: DatabaseLike | null = null;
+
+function numberedPlaceholders(query: string) {
+  let position = 0;
+  return query.replace(/\?/g, () => `$${++position}`);
+}
+
+class PostgresStatement implements DatabaseStatement {
+  private values: unknown[] = [];
+
+  constructor(private readonly query: string, private readonly executor: () => QueryExecutor) {}
+
+  bind(...values: unknown[]) {
+    this.values = values;
+    return this;
+  }
+
+  async execute(executor = this.executor()) {
+    return await executor.unsafe(numberedPlaceholders(this.query), this.values) as Record<string, unknown>[];
+  }
+
+  async first<T = Record<string, unknown>>() {
+    const rows = await this.execute();
+    return (rows[0] as T | undefined) ?? null;
+  }
+
+  async run<T = Record<string, unknown>>() {
+    const rows = await this.execute();
+    return { results: rows as T[], success: true };
+  }
+
+  async all<T = Record<string, unknown>>() {
+    const rows = await this.execute();
+    return { results: rows as T[], success: true };
+  }
+}
 
 const WORKSPACE_COLLECTIONS = ["register", "changes", "history", "today"] as const;
 const WORKSPACE_STATE_MARKER = "state";
@@ -57,67 +99,32 @@ export type EmailRegistrationRow = {
 };
 
 export async function database() {
-  const { env } = await import("cloudflare:workers");
-  const binding = (env as unknown as { DB?: D1DatabaseLike }).DB;
-  if (!binding) throw new Error("Cloudflare D1 binding DB is not configured.");
-  if (!operationalSchemaPromise) operationalSchemaPromise = ensureOperationalSchema(binding);
-  try {
-    await operationalSchemaPromise;
-  } catch (error) {
-    operationalSchemaPromise = null;
-    throw error;
+  const url = databaseUrlFromEnvironment();
+  if (!postgresClient) postgresClient = postgres(url, {
+    max: 5,
+    idle_timeout: 20,
+    connect_timeout: 10,
+    max_lifetime: 60 * 30,
+  });
+  if (!databaseAdapter) {
+    const client = postgresClient;
+    databaseAdapter = {
+      prepare(query: string) {
+        return new PostgresStatement(query, () => client as unknown as QueryExecutor);
+      },
+      async batch(statements: DatabaseStatement[]) {
+        return await client.begin(async (transaction) => {
+          const results: DatabaseResult[] = [];
+          for (const statement of statements) {
+            const rows = await (statement as PostgresStatement).execute(transaction as unknown as QueryExecutor);
+            results.push({ results: rows, success: true });
+          }
+          return results;
+        });
+      },
+    };
   }
-  return binding;
-}
-
-async function ensureOperationalSchema(db: D1DatabaseLike) {
-  const columns = await db.prepare("PRAGMA table_info(users)").all<{ name: string }>();
-  const statements = [
-    db.prepare(`CREATE TABLE IF NOT EXISTS account_actions (
-      id text PRIMARY KEY NOT NULL,
-      user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      action text NOT NULL,
-      code_hash text NOT NULL,
-      expires_at integer NOT NULL,
-      attempts integer DEFAULT 0 NOT NULL,
-      created_at text NOT NULL
-    )`),
-    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS account_actions_user_action_unique ON account_actions(user_id, action)"),
-    db.prepare("CREATE INDEX IF NOT EXISTS account_actions_expiry_index ON account_actions(expires_at)"),
-    db.prepare(`CREATE TABLE IF NOT EXISTS monitoring_events (
-      id text PRIMARY KEY NOT NULL,
-      category text NOT NULL,
-      severity text DEFAULT 'warning' NOT NULL,
-      route text DEFAULT '' NOT NULL,
-      message text NOT NULL,
-      actor_hash text DEFAULT '' NOT NULL,
-      metadata_json text DEFAULT '{}' NOT NULL,
-      notified_at text,
-      created_at text NOT NULL
-    )`),
-    db.prepare("CREATE INDEX IF NOT EXISTS monitoring_events_category_created_index ON monitoring_events(category, created_at)"),
-    db.prepare("CREATE INDEX IF NOT EXISTS monitoring_events_severity_created_index ON monitoring_events(severity, created_at)"),
-    db.prepare(`CREATE TABLE IF NOT EXISTS workspace_data (
-      workspace_id text NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-      namespace text NOT NULL,
-      item_id text NOT NULL,
-      data_json text NOT NULL,
-      updated_at text NOT NULL,
-      PRIMARY KEY (workspace_id, namespace, item_id)
-    )`),
-    db.prepare("CREATE INDEX IF NOT EXISTS workspace_data_workspace_namespace_index ON workspace_data(workspace_id, namespace)"),
-  ];
-  if (!(columns.results ?? []).some((column) => column.name === "session_version")) {
-    statements.push(db.prepare("ALTER TABLE users ADD COLUMN session_version integer DEFAULT 0 NOT NULL"));
-  }
-  if (!(columns.results ?? []).some((column) => column.name === "clerk_user_id")) {
-    statements.push(db.prepare("ALTER TABLE users ADD COLUMN clerk_user_id text"));
-  }
-  statements.push(db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS users_clerk_user_unique ON users(clerk_user_id)"));
-  statements.push(db.prepare("INSERT OR IGNORE INTO d1_migrations(name) VALUES ('0003_gorgeous_black_bolt.sql')"));
-  statements.push(db.prepare("INSERT OR IGNORE INTO d1_migrations(name) VALUES ('0004_colorful_wong.sql')"));
-  statements.push(db.prepare("INSERT OR IGNORE INTO d1_migrations(name) VALUES ('0005_bitter_grandmaster.sql')"));
-  await db.batch(statements);
+  return databaseAdapter;
 }
 
 export async function consumeRateLimit(scope: string, key: string, limit: number, windowSeconds: number) {
@@ -126,7 +133,7 @@ export async function consumeRateLimit(scope: string, key: string, limit: number
   const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
   const result = await db.prepare(`INSERT INTO rate_limits (scope, actor_key, window_start, count)
     VALUES (?, ?, ?, 1)
-    ON CONFLICT(scope, actor_key, window_start) DO UPDATE SET count = count + 1
+    ON CONFLICT(scope, actor_key, window_start) DO UPDATE SET count = rate_limits.count + 1
     RETURNING count`)
     .bind(scope, key, windowStart)
     .first<{ count: number }>();
@@ -315,7 +322,7 @@ export async function loadWorkspaceState(workspace: WorkspaceRow) {
   return workspaceStateFromRows(result.results ?? [], fallback);
 }
 
-async function runWorkspaceBatches(db: D1DatabaseLike, statements: D1Statement[]) {
+async function runWorkspaceBatches(db: DatabaseLike, statements: DatabaseStatement[]) {
   const batchSize = 75;
   for (let offset = 0; offset < statements.length; offset += batchSize) {
     await db.batch(statements.slice(offset, offset + batchSize));
@@ -338,7 +345,7 @@ export async function saveWorkspaceState(workspaceId: string, state: Record<stri
   const existing = new Map((existingResult.results ?? []).map((row) => [`${row.namespace}\u0000${row.item_id}`, row.data_json]));
   const desiredRows = workspaceStateRows(state);
   const desiredKeys = new Set(desiredRows.map((row) => `${row.namespace}\u0000${row.item_id}`));
-  const statements: D1Statement[] = [];
+  const statements: DatabaseStatement[] = [];
 
   for (const row of desiredRows) {
     if (existing.get(`${row.namespace}\u0000${row.item_id}`) === row.data_json) continue;

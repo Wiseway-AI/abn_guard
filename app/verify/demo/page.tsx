@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import Link from "next/link";
 import { accountEnding, demoCertificate, normalisePaymentValue } from "../../badge-demo/demo-certificate";
 import styles from "./verify-demo.module.css";
 
@@ -20,7 +21,7 @@ export default function PublicVerificationDemo() {
 
   return (
     <main className={styles.page}>
-      <header className={styles.header}><a href="/"><span>A</span><strong>ABN Guard</strong></a><p>Independent supplier verification</p></header>
+      <header className={styles.header}><Link href="/"><span>A</span><strong>ABN Guard</strong></Link><p>Independent supplier verification</p></header>
       <section className={styles.shell}>
         <div className={styles.statusBanner}><span>✓</span><div><small>CERTIFICATE STATUS</small><h1>Valid supplier record</h1><p>Last confirmed {demoCertificate.confirmedAt}</p></div><em>{demoCertificate.level}</em></div>
 

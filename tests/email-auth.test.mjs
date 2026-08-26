@@ -42,13 +42,13 @@ test("keeps email registration and verification on the server", async () => {
     readFile(new URL("../app/api/auth/email/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/email/verify/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../drizzle/0001_optimal_miek.sql", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle-pg/0000_initial.sql", import.meta.url), "utf8"),
   ]);
   assert.match(page, /Create account with email/);
   assert.match(page, /Verify email & continue/);
   assert.match(registerRoute, /sendVerificationEmail/);
   assert.match(verifyRoute, /createSessionCookie/);
   assert.match(googleCredentialRoute, /sameOriginRequest/);
-  assert.match(migration, /CREATE TABLE `email_registrations`/);
+  assert.match(migration, /create table email_registrations/i);
   assert.doesNotMatch(page, /RESEND_API_KEY|password_hash|code_hash/);
 });
