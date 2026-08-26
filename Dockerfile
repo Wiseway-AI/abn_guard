@@ -17,7 +17,8 @@ ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
-RUN npm uninstall --global npm \
+RUN apk upgrade --no-cache \
+    && npm uninstall --global npm \
     && corepack disable \
     && addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs
