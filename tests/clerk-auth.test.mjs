@@ -24,6 +24,7 @@ test("integrates Clerk with visible controls and PostgreSQL-scoped identities", 
   assert.match(page, /SignUpButton/);
   assert.match(page, /className="account-signout"[\s\S]*Sign out/);
   assert.match(page, /isLoaded: clerkLoaded, isSignedIn: clerkSignedIn/);
+  assert.doesNotMatch(page, /if \(!clerkLoaded\) return;/);
   assert.match(page, /\[clerkLoaded, clerkSignedIn\]/);
   assert.match(page, /!clerkSignedIn && !currentAccount && isAppPath/);
   assert.doesNotMatch(page, /CLERK_SECRET_KEY/);

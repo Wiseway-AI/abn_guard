@@ -679,7 +679,6 @@ export default function Home() {
   const googleButtonRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!clerkLoaded) return;
     let cancelled = false;
     async function hydrate() {
       const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
