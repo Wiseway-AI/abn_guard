@@ -1,100 +1,67 @@
-# vinext-starter
+# ABN Guard
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+ABN Guard helps teams verify Australian suppliers before payment. It checks ABN and GST status, stores bank-detail records in shared workspaces, monitors changes and supports subscription-based record limits.
 
-## Prerequisites
+## Environments
 
-- Node.js `>=22.13.0`
+| Branch | Environment | URL | Deployment |
+|---|---|---|---|
+| `main` | Canonical, non-deploying branch | — | None |
+| `staging` | QA | [qa-abn-guard.wiseway.ai](https://qa-abn-guard.wiseway.ai) | Automatic on push or manual workflow dispatch |
+| `production` | Production | [abn-guard.wiseway.ai](https://abn-guard.wiseway.ai) | Automatic on push or manual workflow dispatch |
 
-## Quick Start
+The AWS runtime source currently lives on the independent `staging` and `production` branches. `main` still contains parts of the earlier Vinext/Cloudflare baseline and must not be treated as runtime-equivalent until the branches are reconciled. Start AWS application work from the environment branch you intend to change.
+
+Production is online, but Clerk custom-domain TLS validation is still pending. Public pages and `/api/health` remain available; production sign-in should not be considered accepted until Clerk reports its custom domain healthy.
+
+## What it includes
+
+- ABN and GST lookup through the Australian Business Register API
+- browser-first PDF, Word and spreadsheet extraction, with an optional VLM fallback
+- Google, Clerk and verified-email authentication
+- PostgreSQL-backed personal and shared company workspaces
+- free and Starter record quotas with Stripe Checkout, webhooks and Customer Portal
+- account deletion, session revocation, feedback and transactional email flows
+- containerized Next.js deployment on isolated QA and production ECS Fargate services
+
+## Developer quick start
+
+Use the deployable staging baseline:
 
 ```bash
-npm install
+git switch staging
+cp .env.example .env.local
+npm ci
+npm run db:migrate
 npm run dev
+```
+
+Requirements are Node.js 22.13 or newer and PostgreSQL 16 or newer. Configure `DATABASE_URL`, `SESSION_SECRET` and the authentication values needed for the flow you are testing. The application listens on `http://localhost:3001`; the container listens on port `3000`.
+
+Before opening a pull request:
+
+```bash
+npm run lint
+npm test
+npx tsc --noEmit --pretty false
 npm run build
+docker build -t abn-guard .
 ```
 
-This starter does not use `wrangler.jsonc`.
+Do not commit `.env.local` or any Google, Clerk, Resend, Stripe, ABR, database or VLM secret.
 
-## Included Shape
+## Architecture
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+The deployable application is Next.js 16 on Node.js with Drizzle ORM and PostgreSQL. GitHub Actions builds immutable ARM64 images, pushes them to Amazon ECR, runs migrations as one-off ECS tasks and rolls out environment-specific Fargate services. CloudFront and WAF serve public traffic through encrypted ALB origins.
 
-## Workspace Auth Headers
+Infrastructure is maintained in [`Wiseway-AI/wise-infra-terraform`](https://github.com/Wiseway-AI/wise-infra-terraform/tree/codex/abn-guard-aws/abn-guard).
 
-Signed-in visitors receive both `oai-authenticated-user-id` and `oai-authenticated-user-email`. Private Sites require every visitor to sign in; public Sites may also have anonymous visitors, for whom neither header is present.
+## Documentation
 
-The user ID is stable for the same user on the same Site and different across Sites. Email and name are intended for display or contact purposes.
+- [Documentation index](docs/README.md)
+- [Local development and configuration](docs/development.md)
+- [CI/CD and release flow](docs/ci-cd.md)
+- [AWS infrastructure and operations](docs/infrastructure.md)
+- [Optional VLM endpoint](docs/vlm-endpoint.md)
 
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const userId = requestHeaders.get("oai-authenticated-user-id");
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+PostgreSQL migrations live in `drizzle-pg/` on the deployment branches. The migrator uses a PostgreSQL advisory lock and checks applied migration checksums. The daily maintenance command removes expired operational records and checks public health.
