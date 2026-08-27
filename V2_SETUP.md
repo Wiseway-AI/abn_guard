@@ -6,8 +6,8 @@ V2 runs separately from the current production version on the `codex/google-stri
 
 | Plan | Monthly price | Record limit |
 | --- | ---: | ---: |
-| Free trial | A$0 | 30 ABN / bank-detail records |
-| Starter | A$9.90 | 500 ABN / bank-detail records |
+| Free | A$0 | 10 ABN / bank-detail records |
+| Starter | A$9.90 + GST | 100 ABN / bank-detail records |
 
 The server enforces these limits when the workspace is saved, including records created by contract checks and Excel imports.
 
@@ -25,7 +25,7 @@ Set `GOOGLE_CLIENT_ID`, `SESSION_SECRET`, and `APP_URL` as server variables. `SE
 Create one monthly recurring price in AUD:
 
 - Starter: A$9.90 per month
-Set its Price ID in `STRIPE_STARTER_PRICE_ID`. Set `STRIPE_SECRET_KEY`, then create a webhook endpoint at:
+Set its Price ID in `STRIPE_STARTER_PRICE_ID`. Create a dedicated Customer Portal configuration for ABN Guard, set its ID in `STRIPE_BILLING_PORTAL_CONFIGURATION_ID`, and keep plan switching and quantity changes disabled. Set `STRIPE_SECRET_KEY`, then create a webhook endpoint at:
 
 `https://YOUR_V2_DOMAIN/api/billing/webhook`
 
@@ -35,11 +35,12 @@ Subscribe it to:
 - `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
+- `invoice.payment_failed`
 
-Save the webhook signing secret as `STRIPE_WEBHOOK_SECRET`. Enable subscription changes and cancellations in the Stripe Customer Portal settings.
+Save the webhook signing secret as `STRIPE_WEBHOOK_SECRET`. Enable invoice history, payment-method updates, billing details, Tax IDs, and end-of-period cancellation in the dedicated Stripe Customer Portal configuration.
 
 ## Database
 
-V2 requires a Cloudflare D1 database bound as `DB`. Apply the migration in `drizzle/0000_unique_changeling.sql` before enabling Google sign-in.
+V2 requires PostgreSQL 16 or newer through `DATABASE_URL`. Apply `drizzle-pg` migrations with `npm run db:migrate` before enabling Google sign-in.
 
 The database stores users, isolated workspaces, subscription state, and workspace records. Original uploaded documents remain in the user's browser in this version.

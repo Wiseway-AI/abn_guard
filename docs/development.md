@@ -2,7 +2,7 @@
 
 ## Choose the correct baseline
 
-The deployed Node.js/PostgreSQL application lives on `staging` and `production`. For normal feature development, create a feature branch from `staging`, verify it in QA, then open a separate production change from the appropriate production baseline. `main` does not deploy and still differs from the AWS runtime.
+The Node.js/PostgreSQL application baseline lives on `main`, which does not deploy. For normal feature development, create a feature branch from `main`, open a pull request to `staging` and verify it in QA. A change intended for production uses a separate pull request from the same feature branch and references the QA evidence. Reconcile any intentional environment divergence before merging.
 
 ## Prerequisites
 
@@ -14,8 +14,9 @@ The deployed Node.js/PostgreSQL application lives on `staging` and `production`.
 ## Local setup
 
 ```bash
-git switch staging
+git switch main
 git pull --ff-only
+git switch -c feature/<name>
 cp .env.example .env.local
 npm ci
 npm run db:migrate

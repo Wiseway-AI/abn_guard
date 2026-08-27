@@ -1,6 +1,6 @@
 # ABN Guard documentation
 
-These guides describe the containerized AWS application on the `staging` and `production` branches.
+These guides describe the canonical containerized AWS application on `main` and its `staging` and `production` deployment branches.
 
 | Guide | Audience | Covers |
 |---|---|---|
@@ -9,6 +9,6 @@ These guides describe the containerized AWS application on the `staging` and `pr
 | [Infrastructure](infrastructure.md) | Infrastructure and operations | AWS resources, Terraform ownership, secrets, monitoring and runbooks |
 | [VLM endpoint](vlm-endpoint.md) | Document-processing developers | Optional OpenAI-compatible fallback for scanned or unclear files |
 
-The default `main` branch is non-deploying and is not yet runtime-equivalent to the environment branches. When commands depend on the AWS runtime, switch to `staging` or `production` first.
+The default `main` branch is the non-deploying canonical baseline. The environment branches may diverge intentionally, so always confirm the target branch before a release.
 
 Never put credential values in documentation, issues, pull requests or workflow logs. Record only the secret name, owning environment and validation status.

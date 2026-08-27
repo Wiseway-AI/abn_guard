@@ -12,7 +12,7 @@ VLM_MODEL=your-local-model-name
 VLM_API_KEY=optional-token
 ```
 
-`VLM_API_URL` must be an HTTP(S) endpoint reachable by the Cloudflare Worker. Keep `VLM_API_KEY` server-side.
+`VLM_API_URL` must be an HTTP(S) endpoint reachable by the ECS task. Keep `VLM_API_KEY` server-side in AWS Secrets Manager.
 
 ## Request contract
 

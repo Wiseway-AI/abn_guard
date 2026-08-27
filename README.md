@@ -10,7 +10,7 @@ ABN Guard helps teams verify Australian suppliers before payment. It checks ABN 
 | `staging` | QA | [qa-abn-guard.wiseway.ai](https://qa-abn-guard.wiseway.ai) | Automatic on push or manual workflow dispatch |
 | `production` | Production | [abn-guard.wiseway.ai](https://abn-guard.wiseway.ai) | Automatic on push or manual workflow dispatch |
 
-The AWS runtime source currently lives on the independent `staging` and `production` branches. `main` still contains parts of the earlier Vinext/Cloudflare baseline and must not be treated as runtime-equivalent until the branches are reconciled. Start AWS application work from the environment branch you intend to change.
+`main` is the canonical AWS application baseline and does not deploy. The `staging` and `production` branches are independent environment branches; changes intended for both environments should use separate pull requests from the same tested feature branch.
 
 Production is online, but Clerk custom-domain TLS validation is still pending. Public pages and `/api/health` remain available; production sign-in should not be considered accepted until Clerk reports its custom domain healthy.
 
@@ -26,10 +26,12 @@ Production is online, but Clerk custom-domain TLS validation is still pending. P
 
 ## Developer quick start
 
-Use the deployable staging baseline:
+Start from the canonical baseline:
 
 ```bash
-git switch staging
+git switch main
+git pull --ff-only
+git switch -c feature/<name>
 cp .env.example .env.local
 npm ci
 npm run db:migrate
