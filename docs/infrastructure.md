@@ -49,7 +49,7 @@ The Google OAuth callback set should include:
 - `https://qa-abn-guard.wiseway.ai/api/auth/google/callback`
 - `https://abn-guard.wiseway.ai/api/auth/google/callback`
 
-Production Clerk custom-domain TLS validation is a known external blocker for production sign-in. The public site and AWS health endpoint can be healthy while Clerk's custom domain is not; validate both separately.
+Production Clerk custom-domain DNS and email records are verified and both Clerk certificates are issued. The public site and AWS health endpoint can still be healthy during a future Clerk incident, so validate application health and sign-in separately. See [Authentication](auth.md).
 
 ## Monitoring and maintenance
 

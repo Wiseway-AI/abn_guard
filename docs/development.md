@@ -85,3 +85,5 @@ The Docker image is built as a Next.js standalone server and runs as a non-root 
 - Test schema changes against an empty database and a copy with all existing migrations applied.
 
 See [CI/CD](ci-cd.md) before merging and [VLM endpoint](vlm-endpoint.md) for optional scanned-document processing.
+
+See [Authentication](auth.md) for Clerk environment mapping, OAuth callbacks, credential rotation and verification.

@@ -12,7 +12,7 @@ ABN Guard helps teams verify Australian suppliers before payment. It checks ABN 
 
 `main` is the canonical AWS application baseline and does not deploy. The `staging` and `production` branches are independent environment branches; changes intended for both environments should use separate pull requests from the same tested feature branch.
 
-Production is online, but Clerk custom-domain TLS validation is still pending. Public pages and `/api/health` remain available; production sign-in should not be considered accepted until Clerk reports its custom domain healthy.
+Production is online and Clerk's custom-domain DNS, email records and TLS certificates are verified. QA uses the canonical Clerk application's development instance; production uses its paired production instance.
 
 ## What it includes
 
@@ -62,6 +62,7 @@ Infrastructure is maintained in [`Wiseway-AI/wise-infra-terraform`](https://gith
 
 - [Documentation index](docs/README.md)
 - [Local development and configuration](docs/development.md)
+- [Authentication and Clerk integration](docs/auth.md)
 - [CI/CD and release flow](docs/ci-cd.md)
 - [AWS infrastructure and operations](docs/infrastructure.md)
 - [Optional VLM endpoint](docs/vlm-endpoint.md)
