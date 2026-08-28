@@ -1,11 +1,11 @@
-export const VLM_MAX_PAGES = 8;
-export const VLM_MAX_IMAGE_EDGE = 1600;
+export const VLM_MAX_PAGES = 4;
+export const VLM_MAX_DOCUMENT_PAGES = 40;
+export const VLM_MAX_IMAGE_EDGE = 1280;
 
 export type VlmDocumentEntity = {
   abn: string;
   entityName: string;
-  role: "payer" | "payee" | "unknown";
-  location: string;
+  address: string;
   gstRegisteredClaim: boolean | null;
   page: number | null;
   confidence: number;
@@ -91,15 +91,9 @@ export function assessPdfText(pageTexts: string[]): PdfTextAssessment {
   };
 }
 
-export function selectVlmPageNumbers(totalPages: number, maximum = VLM_MAX_PAGES) {
+export function selectVlmPageNumbers(totalPages: number, maximum = VLM_MAX_DOCUMENT_PAGES) {
   if (totalPages <= 0 || maximum <= 0) return [];
-  if (totalPages <= maximum) return Array.from({ length: totalPages }, (_, index) => index + 1);
-  const firstCount = Math.ceil(maximum / 2);
-  const lastCount = maximum - firstCount;
-  return [
-    ...Array.from({ length: firstCount }, (_, index) => index + 1),
-    ...Array.from({ length: lastCount }, (_, index) => totalPages - lastCount + index + 1),
-  ];
+  return Array.from({ length: Math.min(totalPages, maximum) }, (_, index) => index + 1);
 }
 
 export function normalizeVlmExtraction(value: unknown): VlmDocumentExtraction {
@@ -113,13 +107,10 @@ export function normalizeVlmExtraction(value: unknown): VlmDocumentExtraction {
     const abn = digits(raw.abn);
     if (!isValidAustralianAbn(abn) || seen.has(abn)) return [];
     seen.add(abn);
-    const rawRole = text(raw.role, 20).toLowerCase();
-    const role = rawRole === "payer" || rawRole === "payee" ? rawRole : "unknown";
     return [{
       abn,
       entityName: text(raw.entityName ?? raw.entity_name, 140),
-      role,
-      location: text(raw.location, 100),
+      address: text(raw.address ?? raw.location, 240),
       gstRegisteredClaim: booleanClaim(raw.gstRegisteredClaim ?? raw.gst_registered_claim),
       page: pageNumber(raw.page),
       confidence: confidence(raw.confidence),
@@ -154,10 +145,8 @@ export function normalizeVlmExtraction(value: unknown): VlmDocumentExtraction {
 
 export function vlmExtractionToText(extraction: VlmDocumentExtraction) {
   const entityText = extraction.entities.map((entity) => {
-    const trustedRole = entity.confidence >= 0.75 ? entity.role : "unknown";
-    const roleLabel = trustedRole === "payee" ? "Supplier Payee" : trustedRole === "payer" ? "Customer Bill To Payer" : "Entity";
     const gst = entity.gstRegisteredClaim === null ? "" : entity.gstRegisteredClaim ? "GST Registered" : "Not registered for GST";
-    return [roleLabel, entity.entityName, `ABN: ${entity.abn}`, entity.location, gst].filter(Boolean).join("\n");
+    return ["Invoice Entity", entity.entityName, `ABN: ${entity.abn}`, entity.address, gst].filter(Boolean).join("\n");
   }).join("\n\n");
   const bank = extraction.bankDetails?.confidence && extraction.bankDetails.confidence >= 0.7 ? extraction.bankDetails : null;
   const bankText = bank ? [
@@ -168,4 +157,35 @@ export function vlmExtractionToText(extraction: VlmDocumentExtraction) {
     bank.accountNumber && `Account Number: ${bank.accountNumber}`,
   ].filter(Boolean).join("\n") : "";
   return [entityText, bankText].filter(Boolean).join("\n\n");
+}
+
+export function mergeVlmExtractions(extractions: VlmDocumentExtraction[]): VlmDocumentExtraction {
+  const entities = new Map<string, VlmDocumentEntity>();
+  extractions.flatMap((extraction) => extraction.entities).forEach((entity) => {
+    const existing = entities.get(entity.abn);
+    if (!existing) {
+      entities.set(entity.abn, entity);
+      return;
+    }
+    const preferred = entity.confidence > existing.confidence ? entity : existing;
+    const alternative = preferred === entity ? existing : entity;
+    entities.set(entity.abn, {
+      ...preferred,
+      entityName: preferred.entityName || alternative.entityName,
+      address: preferred.address || alternative.address,
+      evidence: preferred.evidence || alternative.evidence,
+      page: preferred.page ?? alternative.page,
+      confidence: Math.max(preferred.confidence, alternative.confidence),
+    });
+  });
+  const bankDetails = extractions.map((extraction) => extraction.bankDetails).filter((details): details is VlmBankDetails => Boolean(details))
+    .sort((left, right) => right.confidence - left.confidence)[0] ?? null;
+  const confidenceValues = extractions.map((extraction) => extraction.confidence).filter((value) => value > 0);
+  return {
+    documentType: extractions.map((extraction) => extraction.documentType).find((type) => type && type !== "unknown") || "unknown",
+    entities: [...entities.values()],
+    bankDetails,
+    confidence: confidenceValues.length ? Math.min(...confidenceValues) : 0,
+    warnings: [...new Set(extractions.flatMap((extraction) => extraction.warnings))].slice(0, 10),
+  };
 }
