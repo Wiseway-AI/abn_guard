@@ -9,7 +9,8 @@ import { accountFileKey, accountStorageKey } from "./account-scope";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
 import { pdfTextRows } from "./pdf-text";
 import { millisecondsUntilTodayRefresh, todayReviewDayKey, todayReviewDayLabel } from "./today-day";
-import { assessPdfText, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_IMAGE_EDGE, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
+import { assessPdfText, mergeVlmExtractions, normalizeVlmExtraction, selectVlmPageNumbers, VLM_MAX_DOCUMENT_PAGES, VLM_MAX_IMAGE_EDGE, VLM_MAX_PAGES, vlmExtractionToText, type VlmDocumentExtraction } from "./vlm-document";
+import { filesWithoutAbn, groupVerificationChecksByFile, mapWithConcurrency, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "./invoice-batch";
 import FeedbackDialog from "./components/FeedbackDialog";
 
 declare global {
@@ -120,6 +121,7 @@ type ContractDocument = {
   selectedPayeeAbns: string[];
   payeeSelection: "automatic" | "manual" | "unresolved";
   processing: "browser" | "vlm";
+  vlmExtraction?: VlmDocumentExtraction;
   processingWarnings: string[];
   requiresManualReview: boolean;
   uploadedAt: string;
@@ -133,6 +135,7 @@ type BankDetailsCandidate = {
 type DetectedEntity = {
   abn: string;
   contractName: string;
+  contractAddress?: string;
   fileIds: string[];
   fileNames: string[];
   context: string;
@@ -149,6 +152,7 @@ type ContractCheck = {
   checkedAt: string;
   abn: string;
   contractName: string;
+  contractAddress?: string;
   contractLocation?: string;
   contractGst: boolean | null;
   contractStatus: "Active" | "Cancelled" | null;
@@ -160,6 +164,8 @@ type ContractCheck = {
   selectedBankDetailKey?: string;
   savedBankDetails?: BankDetails;
   bankDetailStatus: "not-found" | "first-seen" | "match" | "mismatch" | "multiple";
+  missingAbn?: boolean;
+  lookupFailed?: boolean;
 };
 
 type TodayFileRef = {
@@ -179,6 +185,7 @@ type TodayReview = {
   issues: string[];
   official: AbnRecord;
   files?: TodayFileRef[];
+  missingAbn?: boolean;
 };
 
 type ChangeLog = {
@@ -443,41 +450,50 @@ function compareRecord(previous: AbnRecord, current: AbnRecord, trigger: Monitor
 type ContractReadResult = {
   text: string;
   processing: "browser" | "vlm";
+  vlmExtraction?: VlmDocumentExtraction;
   warnings: string[];
   requiresManualReview: boolean;
 };
 
 async function extractWithVlm(file: File, pdf: PDFDocumentProxy, pageTexts: string[]) {
-  const pages = [] as { pageNumber: number; mimeType: "image/jpeg"; data: string }[];
-  for (const pageNumber of selectVlmPageNumbers(pdf.numPages)) {
-    const page = await pdf.getPage(pageNumber);
-    const baseViewport = page.getViewport({ scale: 1 });
-    const scale = Math.min(2, VLM_MAX_IMAGE_EDGE / Math.max(baseViewport.width, baseViewport.height));
-    const viewport = page.getViewport({ scale });
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(viewport.width));
-    canvas.height = Math.max(1, Math.round(viewport.height));
-    const canvasContext = canvas.getContext("2d", { alpha: false });
-    if (!canvasContext) throw new Error("This browser cannot render PDF pages for VLM extraction.");
-    canvasContext.fillStyle = "#ffffff";
-    canvasContext.fillRect(0, 0, canvas.width, canvas.height);
-    await page.render({ canvas, canvasContext, viewport }).promise;
-    pages.push({
-      pageNumber,
-      mimeType: "image/jpeg",
-      data: canvas.toDataURL("image/jpeg", 0.82).replace(/^data:image\/jpeg;base64,/, ""),
+  if (pdf.numPages > VLM_MAX_DOCUMENT_PAGES) throw new Error(`VLM extraction supports invoices up to ${VLM_MAX_DOCUMENT_PAGES} pages.`);
+  const pageNumbers = selectVlmPageNumbers(pdf.numPages, VLM_MAX_DOCUMENT_PAGES);
+  const extractions: VlmDocumentExtraction[] = [];
+  for (let batchStart = 0; batchStart < pageNumbers.length; batchStart += VLM_MAX_PAGES) {
+    const pages = [] as { pageNumber: number; mimeType: "image/jpeg"; data: string }[];
+    const batchPageNumbers = pageNumbers.slice(batchStart, batchStart + VLM_MAX_PAGES);
+    for (const pageNumber of batchPageNumbers) {
+      const page = await pdf.getPage(pageNumber);
+      const baseViewport = page.getViewport({ scale: 1 });
+      const scale = Math.min(2, VLM_MAX_IMAGE_EDGE / Math.max(baseViewport.width, baseViewport.height));
+      const viewport = page.getViewport({ scale });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(viewport.width));
+      canvas.height = Math.max(1, Math.round(viewport.height));
+      const canvasContext = canvas.getContext("2d", { alpha: false });
+      if (!canvasContext) throw new Error("This browser cannot render PDF pages for VLM extraction.");
+      canvasContext.fillStyle = "#ffffff";
+      canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvas, canvasContext, viewport }).promise;
+      pages.push({
+        pageNumber,
+        mimeType: "image/jpeg",
+        data: canvas.toDataURL("image/jpeg", 0.72).replace(/^data:image\/jpeg;base64,/, ""),
+      });
+      canvas.width = 1;
+      canvas.height = 1;
+    }
+    const batchText = batchPageNumbers.map((pageNumber) => `PDF page ${pageNumber}\n${pageTexts[pageNumber - 1] ?? ""}`).join("\n\n");
+    const response = await fetch("/api/vlm/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileName: file.name, existingText: batchText, pages }),
     });
-    canvas.width = 1;
-    canvas.height = 1;
+    const result = await response.json() as { extraction?: unknown; error?: string };
+    if (!response.ok) throw new Error(result.error || "VLM document extraction failed.");
+    extractions.push(normalizeVlmExtraction(result.extraction));
   }
-  const response = await fetch("/api/vlm/extract", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ fileName: file.name, existingText: pageTexts.join("\n"), pages }),
-  });
-  const result = await response.json() as { extraction?: unknown; error?: string };
-  if (!response.ok) throw new Error(result.error || "VLM document extraction failed.");
-  return normalizeVlmExtraction(result.extraction);
+  return mergeVlmExtractions(extractions);
 }
 
 async function readContract(file: File, vlmEnabled: boolean): Promise<ContractReadResult> {
@@ -494,8 +510,7 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
     }
     const localText = pages.join("\n");
     const assessment = assessPdfText(pages);
-    if (!assessment.needsVlm) return { text: localText, processing: "browser", warnings: [], requiresManualReview: false };
-    if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: true };
+    if (!vlmEnabled) return { text: localText, processing: "browser", warnings: assessment.reasons, requiresManualReview: assessment.needsVlm };
     try {
       const extraction: VlmDocumentExtraction = await extractWithVlm(file, pdf, pages);
       const vlmText = vlmExtractionToText(extraction);
@@ -503,17 +518,18 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
       return {
         text: [localText, vlmText].filter(Boolean).join("\n\n"),
         processing: "vlm",
-        warnings: [...assessment.reasons, ...extraction.warnings],
+        vlmExtraction: extraction,
+        warnings: extraction.warnings,
         requiresManualReview: extraction.confidence < 0.8
-          || extraction.entities.some((entity) => entity.confidence < 0.75 || entity.role === "unknown")
+          || extraction.entities.some((entity) => entity.confidence < 0.75)
           || extraction.warnings.length > 0,
       };
     } catch (error) {
       return {
         text: localText,
         processing: "browser",
-        warnings: [...assessment.reasons, error instanceof Error ? error.message : "VLM fallback failed."],
-        requiresManualReview: true,
+        warnings: [...assessment.reasons, error instanceof Error ? error.message : "VLM extraction failed."],
+        requiresManualReview: assessment.needsVlm,
       };
     }
   }
@@ -578,6 +594,26 @@ function BankVerification({ check, onSelectCandidate }: { check: ContractCheck; 
   </div>;
 }
 
+function MissingAbnVerification({ check, documents, onReviewed }: { check: ContractCheck; documents: ContractDocument[]; onReviewed: (reviewed: boolean) => void }) {
+  return <div className="check-card missing-abn-check">
+    <div className="check-card-top">
+      <div><small>SUPPLIER ABN NOT FOUND</small><h3>{check.fileName}</h3><p className="role-confidence">No supplier ABN was available for verification in this invoice.</p></div>
+      <div className="check-result-actions">
+        <span className="payee-role-pill missing">Manual check</span>
+        <span className={check.reviewed ? "result-pill ok" : "result-pill issue"}>{check.reviewed ? "Reviewed" : "Verification required"}</span>
+        <label className={check.reviewed ? "review-check checked" : "review-check"}><input type="checkbox" checked={check.reviewed} onChange={(event) => onReviewed(event.target.checked)} /><span>Reviewed</span></label>
+      </div>
+    </div>
+    <div className="missing-abn-verification">
+      <section className="evidence-panel file-evidence">
+        <div className="evidence-title"><span>FILE</span><div><b>Invoice requiring review</b><small className="file-source-links">{documents.length ? documents.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
+        <dl><div><dt>Entity name</dt><dd>{check.contractName || "Not found in file"}</dd></div><div><dt>ABN</dt><dd className="missing-value">Not found in file</dd></div></dl>
+      </section>
+      <section className="missing-abn-action" role="alert"><span>!</span><div><h4>Manual verification required</h4><p>Open the original invoice and confirm the supplier’s ABN before payment. Tick Reviewed only after checking the source document or obtaining a corrected invoice.</p></div></section>
+    </div>
+  </div>;
+}
+
 function bankSelectionMissing(check: ContractCheck) {
   return check.bankDetailStatus === "multiple" && !check.selectedBankDetailKey;
 }
@@ -587,7 +623,7 @@ function checkRequiresReview(check: ContractCheck) {
 }
 
 function checkIsVerified(check: ContractCheck) {
-  return !bankSelectionMissing(check) && (!checkRequiresReview(check) || check.reviewed);
+  return !check.lookupFailed && !bankSelectionMissing(check) && (!checkRequiresReview(check) || check.reviewed);
 }
 
 function isEntityNameIssue(issue: string) {
@@ -610,9 +646,9 @@ function TodaySection({ title, items, onVerify, onOpenFile }: { title: string; i
       <thead><tr><th>File</th><th>Name / ABN</th><th>ABN status</th><th>GST status</th><th>Uploaded</th><th>Issues</th><th>Review</th></tr></thead>
       <tbody>{items.map((item) => <tr key={item.id}>
         <td>{item.files?.length ? <div className="today-file-links">{item.files.map((file) => <button type="button" key={file.id} onClick={() => onOpenFile(file)} title={`Open ${file.name}`}>{file.name}</button>)}</div> : <b>{item.fileName || "—"}</b>}</td>
-        <td><b>{item.official.entityName || "Name unavailable"}</b><small>{formatAbn(item.official.abn)}</small></td>
-        <td><span className={item.official.status === "Active" ? "status-dot active" : item.official.status === "Cancelled" ? "status-dot cancelled" : "status-dot"}>{item.official.status}</span><small>{item.official.statusFrom || "—"}</small></td>
-        <td><b className={item.official.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.official.gstRegistered === null ? "Pending" : item.official.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.official.gstFrom || "—"}</small></td>
+        <td><b>{item.missingAbn ? "ABN not found" : item.official.entityName || "Name unavailable"}</b><small>{item.missingAbn ? "Manual invoice review" : formatAbn(item.official.abn)}</small></td>
+        <td>{item.missingAbn ? <><span className="status-dot">Not available</span><small>No ABN in file</small></> : <><span className={item.official.status === "Active" ? "status-dot active" : item.official.status === "Cancelled" ? "status-dot cancelled" : "status-dot"}>{item.official.status}</span><small>{item.official.statusFrom || "—"}</small></>}</td>
+        <td>{item.missingAbn ? <><b className="gst-status">Not checked</b><small>ABN required</small></> : <><b className={item.official.gstRegistered === false ? "gst-status not-registered" : "gst-status"}>{item.official.gstRegistered === null ? "Pending" : item.official.gstRegistered ? "Registered" : "Not registered"}</b><small>{item.official.gstFrom || "—"}</small></>}</td>
         <td><span>{dateTime(item.uploadedAt)}</span></td>
         <td><span className={item.issues.length && item.status === "double-check" ? "today-issues open" : "today-issues"}>{item.issues.length ? item.status === "verified" ? `${item.issues.length} reviewed` : `${item.issues.length} issue${item.issues.length === 1 ? "" : "s"}` : "None"}</span>{item.issues[0] && <small title={item.issues.join(" · ")}>{item.issues[0]}</small>}</td>
         <td>{onVerify ? <button className="today-verify" type="button" onClick={() => onVerify(item.id)}>Verify</button> : <span className="today-verified">✓ Verified</span>}</td>
@@ -973,39 +1009,37 @@ export default function Home() {
     setDocuments([]);
   }
 
-  const detectedEntities = useMemo(() => {
-    const map = new Map<string, DetectedEntity>();
-    documents.forEach((document) => {
-      const documentBankDetails = extractBankDetails(document.text);
-      const verificationSelection = selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn);
-      verificationSelection.verificationAbns.forEach((abn) => {
-        const context = contextForAbn(document.text, abn);
-        const name = claimsFromContext(context).contractName;
-        const existing = map.get(abn);
-        const bankDetailCandidates = new Map((existing?.bankDetailCandidates ?? []).map((candidate) => [bankDetailsKey(candidate.details), candidate]));
-        if (documentBankDetails && document.selectedPayeeAbns.includes(abn)) {
-          const key = bankDetailsKey(documentBankDetails);
-          const previousCandidate = bankDetailCandidates.get(key);
-          bankDetailCandidates.set(key, {
-            details: documentBankDetails,
-            fileNames: [...new Set([...(previousCandidate?.fileNames ?? []), document.name])],
-          });
-        }
-        map.set(abn, {
-          abn,
-          contractName: existing?.contractName || name,
-          fileIds: [...new Set([...(existing?.fileIds ?? []), document.id])],
-          fileNames: [...new Set([...(existing?.fileNames ?? []), document.name])],
-          context: existing?.context || context,
-          uploadedAt: existing?.uploadedAt || document.uploadedAt,
-          bankDetailCandidates: [...bankDetailCandidates.values()],
-        });
-      });
+  function detectedEntitiesForDocument(document: ContractDocument): DetectedEntity[] {
+    const documentBankDetails = extractBankDetails(document.text);
+    const verificationSelection = selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn);
+    return verificationSelection.verificationAbns.map((abn) => {
+      const context = contextForAbn(document.text, abn);
+      const vlmEntity = document.vlmExtraction?.entities.find((entity) => entity.abn === abn);
+      const bankDetailCandidates = documentBankDetails && verificationSelection.verificationAbns.length === 1
+        ? [{ details: documentBankDetails, fileNames: [document.name] }]
+        : [];
+      return {
+        abn,
+        contractName: vlmEntity?.entityName || claimsFromContext(context).contractName,
+        contractAddress: vlmEntity?.address,
+        fileIds: [document.id],
+        fileNames: [document.name],
+        context,
+        uploadedAt: document.uploadedAt,
+        bankDetailCandidates,
+      };
     });
-    return [...map.values()];
-  }, [documents, currentAccount?.ownAbn]);
+  }
+
+  const detectedEntities = useMemo(() => documents.flatMap(detectedEntitiesForDocument), [documents, currentAccount?.ownAbn]);
 
   const detectedDocumentAbns = useMemo(() => [...new Set(documents.flatMap((document) => document.abns))], [documents]);
+  const missingAbnDocuments = useMemo(() => {
+    const filesWithVerificationTargets = new Set(detectedEntities.flatMap((entity) => entity.fileIds));
+    return documents.filter((document) => !filesWithVerificationTargets.has(document.id));
+  }, [documents, detectedEntities]);
+  const verificationItemCount = documents.length;
+  const verificationButtonLabel = `Verify ${verificationItemCount} invoice${verificationItemCount === 1 ? "" : "s"}`;
   const skippedOwnAbnCount = useMemo(() => {
     const ownAbn = onlyDigits(currentAccount?.ownAbn ?? "");
     return ownAbn && detectedDocumentAbns.includes(ownAbn) ? 1 : 0;
@@ -1029,6 +1063,8 @@ export default function Home() {
     const batchId = checks[0]?.batchId;
     return batchId ? checks.filter((check) => check.batchId === batchId) : [];
   }, [checks]);
+  const latestCheckGroups = useMemo(() => groupVerificationChecksByFile(latestChecks), [latestChecks]);
+  const activeResultChecks = latestCheckGroups[activeCheckIndex] ?? [];
   const todayDayGroups = useMemo(() => {
     const grouped = new Map<string, TodayReview[]>();
     todayReviews.forEach((item) => {
@@ -1046,8 +1082,8 @@ export default function Home() {
   const issueCount = latestChecks.filter((check) => isCheckSelectedPayee(check) && !checkIsVerified(check)).length;
 
   useEffect(() => {
-    queueMicrotask(() => setActiveCheckIndex((current) => Math.min(current, Math.max(latestChecks.length - 1, 0))));
-  }, [latestChecks.length]);
+    queueMicrotask(() => setActiveCheckIndex((current) => Math.min(current, Math.max(latestCheckGroups.length - 1, 0))));
+  }, [latestCheckGroups.length]);
 
   function addHistoryEntries(records: AbnRecord[], event: AbnHistoryEntry["event"]) {
     const entries = records.map((record) => ({
@@ -1381,52 +1417,31 @@ export default function Home() {
   async function handleFiles(files: File[]) {
     const account = currentAccount;
     if (!files.length || !account) return;
+    const selection = selectInvoiceBatchFiles(documents.length, files);
+    if (!selection.accepted.length) {
+      setNotice(`A verification batch can contain up to ${MAX_INVOICE_BATCH_FILES} invoices. Complete the current batch before uploading more.`);
+      return;
+    }
     setIsParsing(true);
     setNotice("");
-    const parsed: ContractDocument[] = [];
-    let failed = 0;
-    for (const file of files) {
+    const progressiveBatchId = documents.length && latestChecks.length ? latestChecks[0].batchId : crypto.randomUUID();
+    if (!documents.length) {
+      setChecks([]);
+      setActiveCheckIndex(0);
+    }
+    const outcomes = await mapWithConcurrency(selection.accepted, 2, async (file): Promise<ContractDocument | null> => {
       try {
-        const read = await readContract(file, false);
+        const read = await readContract(file, true);
         const text = read.text;
         const id = crypto.randomUUID();
         const abns = extractAbns(text);
         const roleAnalysis = classifyAbnRoles(text, abns, currentAccount?.ownAbn);
-        let abnRoles = roleAnalysis.candidates;
+        const abnRoles = roleAnalysis.candidates;
         let selectedPayeeAbns = roleAnalysis.selectedPayeeAbns;
-        const abnEntityNames: Record<string, string> = {};
-        if (abns.length > 1) {
-          const officialResults = await Promise.allSettled(abns.map((abn) => lookupAbn(abn)));
-          officialResults.forEach((result, index) => {
-            if (result.status === "fulfilled" && result.value.entityName) abnEntityNames[abns[index]] = result.value.entityName;
-          });
-          const accountName = extractBankDetails(text)?.accountName ?? "";
-          const accountMatches = accountName
-            ? abns.filter((abn) => abnEntityNames[abn] && compareCompanyNames(accountName, abnEntityNames[abn]) !== "mismatch")
-            : [];
-          if (accountMatches.length === 1) {
-            selectedPayeeAbns = accountMatches;
-            abnRoles = abnRoles.map((candidate) => candidate.abn === accountMatches[0]
-              ? { ...candidate, role: "payee", confidence: Math.max(candidate.confidence, 0.94), reasons: [...candidate.reasons, "Bank account name matches the ABN Lookup entity"] }
-              : candidate);
-          }
-        }
-        const selectedCounterpartyBeforeWorkspaceRule = selectedPayeeAbns.some((abn) => onlyDigits(abn) !== onlyDigits(currentAccount?.ownAbn ?? ""));
         const verificationSelection = selectAbnsForVerification(abns, selectedPayeeAbns, currentAccount?.ownAbn);
         selectedPayeeAbns = verificationSelection.selectedPayeeAbns;
-        if (!selectedCounterpartyBeforeWorkspaceRule && verificationSelection.skippedOwnAbns.length && selectedPayeeAbns.length === 1) {
-          const counterpartyAbn = selectedPayeeAbns[0];
-          abnRoles = abnRoles.map((candidate) => candidate.abn === counterpartyAbn
-            ? {
-                ...candidate,
-                role: "payee" as const,
-                confidence: Math.max(candidate.confidence, 0.9),
-                reasons: ["Only counterparty ABN after excluding this workspace", ...candidate.reasons.filter((reason) => reason !== "No clear payer or payee label found")],
-              }
-            : candidate);
-        }
         await storeOriginalFile(account.id, id, file);
-        parsed.push({
+        const parsedDocument: ContractDocument = {
           id,
           name: file.name,
           url: URL.createObjectURL(file),
@@ -1434,29 +1449,43 @@ export default function Home() {
           abns,
           abnRoles,
           selectedPayeeAbns,
-          payeeSelection: selectedPayeeAbns.length === 1 ? "automatic" : "unresolved",
+          payeeSelection: selectedPayeeAbns.length ? "automatic" : "unresolved",
           processing: read.processing,
+          vlmExtraction: read.vlmExtraction,
           processingWarnings: read.warnings,
           requiresManualReview: read.requiresManualReview,
           uploadedAt: new Date().toISOString(),
-        });
+        };
+        setDocuments((previous) => [...previous, parsedDocument]);
+        const detectedForFile = detectedEntitiesForDocument(parsedDocument);
+        const verificationOutcomes = await mapWithConcurrency(detectedForFile, 4, (detected) => verificationCheckForDetected(detected, progressiveBatchId, [parsedDocument]));
+        const checksForFile = verificationOutcomes.length
+          ? verificationOutcomes.map((outcome) => outcome.check)
+          : [missingAbnCheckForDocument(parsedDocument, progressiveBatchId)];
+        setChecks((previous) => previous.some((check) => check.batchId === progressiveBatchId)
+          ? [...previous, ...checksForFile].slice(-100)
+          : [...checksForFile, ...previous].slice(0, 100));
+        return parsedDocument;
       } catch {
-        failed += 1;
+        return null;
       }
-    }
-    setDocuments((previous) => [...previous, ...parsed]);
+    });
+    const parsed = outcomes.filter((document): document is ContractDocument => Boolean(document));
+    const failed = outcomes.length - parsed.length;
     setIsParsing(false);
     const found = parsed.reduce((sum, item) => sum + item.abns.length, 0);
+    const withoutAbn = filesWithoutAbn(parsed);
     const unreadableFallbacks = parsed.filter((item) => item.processing === "browser" && item.processingWarnings.length).length;
     const parsedOwnAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).skippedOwnAbns))];
     const parsedVerificationAbns = [...new Set(parsed.flatMap((document) => selectAbnsForVerification(document.abns, document.selectedPayeeAbns, currentAccount?.ownAbn).verificationAbns))];
     const ownAbnMessage = parsedOwnAbns.length
       ? ` ${parsedOwnAbns.length} workspace ABN${parsedOwnAbns.length === 1 ? " was" : "s were"} skipped; ${parsedVerificationAbns.length} counterparty ABN${parsedVerificationAbns.length === 1 ? " is" : "s are"} ready to verify.`
       : "";
-    setNotice(`Added ${parsed.length} contract${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}.${ownAbnMessage}${unreadableFallbacks ? ` ${unreadableFallbacks} PDF${unreadableFallbacks === 1 ? " needs" : "s need"} manual review because local extraction was incomplete.` : ""}${failed ? ` ${failed} file${failed === 1 ? "" : "s"} could not be read.` : ""}`);
+    setNotice(`Added ${parsed.length} invoice${parsed.length === 1 ? "" : "s"} and detected ${found} valid ABN${found === 1 ? "" : "s"}.${withoutAbn.length ? ` ${withoutAbn.length} file${withoutAbn.length === 1 ? " has" : "s have"} no valid ABN and will require manual verification.` : ""}${ownAbnMessage}${unreadableFallbacks ? ` ${unreadableFallbacks} PDF${unreadableFallbacks === 1 ? " needs" : "s need"} manual review because local extraction was incomplete.` : ""}${failed ? ` ${failed} file${failed === 1 ? "" : "s"} could not be read.` : ""}${selection.rejectedCount ? ` ${selection.rejectedCount} additional file${selection.rejectedCount === 1 ? " was" : "s were"} not added because the batch limit is ${MAX_INVOICE_BATCH_FILES}.` : ""}`);
   }
 
   function isCheckSelectedPayee(check: ContractCheck) {
+    if (check.missingAbn) return true;
     return documents.some((document) => check.fileIds.includes(document.id) && document.selectedPayeeAbns.includes(check.abn));
   }
 
@@ -1524,55 +1553,45 @@ export default function Home() {
       const { bankIssues, ...bankVerification } = bank;
       return { ...item, ...bankVerification, issues: [...issuesWithoutBank, ...bankIssues], reviewed: false };
     }));
-    setNotice(`${check.official.entityName || formatAbn(check.abn)} selected as the payee. Bank details will only be linked to this ABN.`);
+    setNotice(`${check.official.entityName || formatAbn(check.abn)} selected for verification. Bank details will only be linked to this ABN.`);
   }
 
-  async function verifyContracts() {
-    if (!detectedEntities.length) {
-      setNotice("No valid 11-digit ABN was found in the uploaded contracts.");
-      return;
-    }
-    setBusy(true);
-    setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}…`);
-    const batchId = crypto.randomUUID();
-    const nextChecks: ContractCheck[] = [];
-    const failedLookups: { abn: string; message: string }[] = [];
-    for (const detected of detectedEntities) {
-      try {
-        const official = await lookupAbn(detected.abn);
-        const savedBankDetails = register.find((record) => record.abn === detected.abn)?.bankDetails;
-        const fileBankDetails = detected.bankDetailCandidates[0]?.details;
-        const multipleBankDetails = detected.bankDetailCandidates.length > 1;
-        const bankDetailStatus: ContractCheck["bankDetailStatus"] = !fileBankDetails
-          ? "not-found"
-          : multipleBankDetails
-            ? "multiple"
-            : !savedBankDetails
-              ? "first-seen"
-              : bankDetailsMatch(fileBankDetails, savedBankDetails)
-                ? "match"
-                : "mismatch";
-        const extractedClaims = claimsFromContext(detected.context);
-        const claims = { ...extractedClaims, contractName: detected.contractName };
-        const issues: string[] = [];
-        const officialLocation = [official.state, official.postcode].filter(Boolean).join(" ");
-        if (!claims.contractName) issues.push("Company name was not found in the file");
-        else if (official.entityName && compareCompanyNames(claims.contractName, official.entityName) === "mismatch")
-          issues.push(`File name “${claims.contractName}” does not match the registered entity name`);
-        if (claims.contractLocation && (!officialLocation || normalizeLocation(claims.contractLocation) !== normalizeLocation(officialLocation)))
-          issues.push(`File location ${claims.contractLocation} does not match the ABN Lookup location ${officialLocation || "unavailable"}`);
-        if (official.gstRegistered === false) issues.push("GST is not currently registered. Review this result before completing verification.");
-        if (multipleBankDetails) issues.push("Multiple different bank details were found across the uploaded files for this ABN.");
-        else if (bankDetailStatus === "first-seen") issues.push("First bank details found for this ABN. Independently confirm the account name, BSB and account number directly with the payee before saving.");
-        else if (bankDetailStatus === "mismatch") issues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
-        const sourceDocuments = documents.filter((document) => detected.fileIds.includes(document.id));
-        if (sourceDocuments.some((document) => document.processing === "vlm" && document.requiresManualReview))
-          issues.push("VLM-assisted extraction has low confidence or warnings. Review the original file before completing verification.");
-        else if (sourceDocuments.some((document) => document.processing === "browser" && document.requiresManualReview))
-          issues.push("The PDF text extraction was incomplete. Review the original file before completing verification.");
-        if (official.source === "pending") issues.push("Official API is not connected. Add a GUID and verify again.");
-        const recordToSave = { ...official, bankDetails: multipleBankDetails ? savedBankDetails : fileBankDetails ?? savedBankDetails };
-        nextChecks.push({
+  async function verificationCheckForDetected(detected: DetectedEntity, batchId: string, sourceDocuments: ContractDocument[]) {
+    try {
+      const official = await lookupAbn(detected.abn);
+      const savedBankDetails = register.find((record) => record.abn === detected.abn)?.bankDetails;
+      const fileBankDetails = detected.bankDetailCandidates[0]?.details;
+      const multipleBankDetails = detected.bankDetailCandidates.length > 1;
+      const bankDetailStatus: ContractCheck["bankDetailStatus"] = !fileBankDetails
+        ? "not-found"
+        : multipleBankDetails
+          ? "multiple"
+          : !savedBankDetails
+            ? "first-seen"
+            : bankDetailsMatch(fileBankDetails, savedBankDetails)
+              ? "match"
+              : "mismatch";
+      const extractedClaims = claimsFromContext(detected.context);
+      const claims = { ...extractedClaims, contractName: detected.contractName };
+      const issues: string[] = [];
+      const officialLocation = [official.state, official.postcode].filter(Boolean).join(" ");
+      if (!claims.contractName) issues.push("Company name was not found in the file");
+      else if (official.entityName && compareCompanyNames(claims.contractName, official.entityName) === "mismatch")
+        issues.push(`File name “${claims.contractName}” does not match the registered entity name`);
+      if (claims.contractLocation && (!officialLocation || normalizeLocation(claims.contractLocation) !== normalizeLocation(officialLocation)))
+        issues.push(`File location ${claims.contractLocation} does not match the ABN Lookup location ${officialLocation || "unavailable"}`);
+      if (official.gstRegistered === false) issues.push("GST is not currently registered. Review this result before completing verification.");
+      if (multipleBankDetails) issues.push("Multiple different bank details were found across the uploaded files for this ABN.");
+      else if (bankDetailStatus === "first-seen") issues.push("First bank details found for this ABN. Independently confirm the account name, BSB and account number directly with the payee before saving.");
+      else if (bankDetailStatus === "mismatch") issues.push("Bank details do not match the details saved in Records. Confirm before replacing the saved bank details.");
+      if (sourceDocuments.some((document) => document.processing === "vlm" && document.requiresManualReview))
+        issues.push("VLM-assisted extraction has low confidence or warnings. Review the original file before completing verification.");
+      else if (sourceDocuments.some((document) => document.processing === "browser" && document.requiresManualReview))
+        issues.push("The PDF text extraction was incomplete. Review the original file before completing verification.");
+      if (official.source === "pending") issues.push("Official API is not connected. Add a GUID and verify again.");
+      const recordToSave = { ...official, bankDetails: multipleBankDetails ? savedBankDetails : fileBankDetails ?? savedBankDetails };
+      return {
+        check: {
           id: crypto.randomUUID(),
           batchId,
           fileName: detected.fileNames.join(", "),
@@ -1587,20 +1606,116 @@ export default function Home() {
           fileBankDetailCandidates: detected.bankDetailCandidates,
           savedBankDetails,
           bankDetailStatus,
+          contractAddress: detected.contractAddress,
           ...claims,
-        });
-      } catch (error) {
-        failedLookups.push({ abn: detected.abn, message: error instanceof Error ? error.message : "Lookup failed" });
-      }
+        } satisfies ContractCheck,
+        failure: null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Lookup failed";
+      const claims = { ...claimsFromContext(detected.context), contractName: detected.contractName };
+      const savedBankDetails = register.find((record) => record.abn === detected.abn)?.bankDetails;
+      return {
+        check: {
+          id: crypto.randomUUID(),
+          batchId,
+          fileName: detected.fileNames[0],
+          fileIds: detected.fileIds,
+          uploadedAt: detected.uploadedAt,
+          checkedAt: new Date().toISOString(),
+          abn: detected.abn,
+          official: {
+            abn: detected.abn,
+            entityName: "Official lookup unavailable",
+            status: "Unknown",
+            statusFrom: "",
+            gstRegistered: null,
+            gstFrom: "",
+            entityType: "",
+            state: "",
+            postcode: "",
+            lastChecked: new Date().toISOString(),
+            source: "pending",
+            bankDetails: savedBankDetails,
+          },
+          issues: [`Official ABN lookup failed: ${message}. Review this invoice and try verification again.`],
+          reviewed: false,
+          fileBankDetails: detected.bankDetailCandidates[0]?.details,
+          fileBankDetailCandidates: detected.bankDetailCandidates,
+          savedBankDetails,
+          bankDetailStatus: "not-found",
+          lookupFailed: true,
+          contractAddress: detected.contractAddress,
+          ...claims,
+        } satisfies ContractCheck,
+        failure: { abn: detected.abn, message },
+      };
     }
+  }
+
+  function missingAbnCheckForDocument(document: ContractDocument, batchId: string): ContractCheck {
+    const claims = claimsFromContext(document.text);
+    const missingAbnIssue = document.abns.length
+      ? "No counterparty ABN was found in this file. Confirm the supplier’s ABN before payment."
+      : "No valid ABN was found in this file. Confirm the supplier’s ABN before payment.";
+    return {
+      id: crypto.randomUUID(),
+      batchId,
+      fileName: document.name,
+      fileIds: [document.id],
+      uploadedAt: document.uploadedAt,
+      checkedAt: new Date().toISOString(),
+      abn: "",
+      contractName: claims.contractName,
+      contractLocation: claims.contractLocation,
+      contractGst: claims.contractGst,
+      contractStatus: claims.contractStatus,
+      official: {
+        abn: "",
+        entityName: claims.contractName || "ABN not found",
+        status: "Unknown",
+        statusFrom: "",
+        gstRegistered: null,
+        gstFrom: "",
+        entityType: "",
+        state: "",
+        postcode: "",
+        lastChecked: new Date().toISOString(),
+        source: "pending",
+      },
+      issues: [missingAbnIssue],
+      reviewed: false,
+      bankDetailStatus: "not-found",
+      missingAbn: true,
+    };
+  }
+
+  async function verifyContracts() {
+    if (!verificationItemCount) {
+      setNotice("No counterparty ABN or invoice requiring manual ABN review was found in the uploaded files.");
+      return;
+    }
+    setBusy(true);
+    setNotice(`Verifying ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? ` and preparing ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} without an ABN for manual review` : ""}…`);
+    const batchId = crypto.randomUUID();
+    const outcomes = await mapWithConcurrency(detectedEntities, 4, (detected) => verificationCheckForDetected(
+      detected,
+      batchId,
+      documents.filter((document) => detected.fileIds.includes(document.id)),
+    ));
+    const nextChecks = [
+      ...outcomes.map((outcome) => outcome.check),
+      ...missingAbnDocuments.map((document) => missingAbnCheckForDocument(document, batchId)),
+    ];
+    const failedLookups = outcomes.flatMap((outcome) => outcome.failure ? [outcome.failure] : []);
     setChecks((previous) => [...nextChecks, ...previous].slice(0, 100));
     setActiveCheckIndex(0);
     setBusy(false);
     if (failedLookups.length) {
       const failedSummary = failedLookups.map((failure) => `${formatAbn(failure.abn)} (${failure.message})`).join("; ");
-      setNotice(`Verification completed for ${nextChecks.length} of ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}. ${failedLookups.length} lookup${failedLookups.length === 1 ? "" : "s"} failed: ${failedSummary}`);
+      setNotice(`Verification completed for ${detectedEntities.length - failedLookups.length} of ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? `, with ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} requiring manual ABN review` : ""}. ${failedLookups.length} lookup${failedLookups.length === 1 ? "" : "s"} failed: ${failedSummary}`);
     } else {
-      setNotice(`Verification complete: ${nextChecks.length} ABN${nextChecks.length === 1 ? "" : "s"}. Review the suggested payee before completing this batch.`);
+      setNotice(`Verification complete: ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}${missingAbnDocuments.length ? ` and ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} without an ABN` : ""}. Review every flagged item before completing this batch.`);
     }
   }
 
@@ -1687,12 +1802,18 @@ export default function Home() {
     if (!latestChecks.length) return;
     const payeeChecks = latestChecks.filter(isCheckSelectedPayee);
     if (!payeeChecks.length) {
-      setNotice("Select at least one payee ABN before completing this batch.");
+      setNotice("Select at least one invoice ABN before completing this batch.");
+      return;
+    }
+    const unreviewedMissingAbns = payeeChecks.filter((check) => check.missingAbn && !check.reviewed);
+    if (unreviewedMissingAbns.length) {
+      setActiveCheckIndex(Math.max(0, latestCheckGroups.findIndex((group) => group.some((check) => check.id === unreviewedMissingAbns[0].id))));
+      setNotice(`Review ${unreviewedMissingAbns[0].fileName} and tick Reviewed before completing this batch.`);
       return;
     }
     const missingBankSelections = payeeChecks.filter(bankSelectionMissing);
     if (missingBankSelections.length) {
-      setActiveCheckIndex(Math.max(0, latestChecks.findIndex((check) => check.id === missingBankSelections[0].id)));
+      setActiveCheckIndex(Math.max(0, latestCheckGroups.findIndex((group) => group.some((check) => check.id === missingBankSelections[0].id))));
       setNotice(`Choose the bank account to save for ${missingBankSelections[0].official.entityName || formatAbn(missingBankSelections[0].abn)} before completing this batch.`);
       return;
     }
@@ -1708,9 +1829,10 @@ export default function Home() {
       status: checkIsVerified(check) ? "verified" : "double-check",
       issues: check.issues,
       official: check.official,
+      missingAbn: check.missingAbn,
       files: check.fileIds.map((fileId) => documents.find((document) => document.id === fileId)).filter((document): document is ContractDocument => Boolean(document)).map((document) => ({ id: document.id, name: document.name })),
     }));
-    const eligibleVerifiedRecords = payeeChecks.filter(checkIsVerified).map((check) => check.official);
+    const eligibleVerifiedRecords = [...new Map(payeeChecks.filter((check) => !check.missingAbn && checkIsVerified(check)).map((check) => [check.official.abn, check.official])).values()];
     const verifiedRecords = recordsWithinQuota(eligibleVerifiedRecords);
     setTodayReviews((previous) => [...completed, ...previous].slice(0, 500));
     addVerifiedRecords(verifiedRecords);
@@ -1722,13 +1844,22 @@ export default function Home() {
     setCheckNameDraft("");
     if (fileRef.current) fileRef.current.value = "";
     const doubleChecks = completed.filter((item) => item.status === "double-check").length;
+    const manuallyReviewedMissingAbns = completed.filter((item) => item.missingAbn).length;
     const quotaSkipped = eligibleVerifiedRecords.length - verifiedRecords.length;
-    setNotice(quotaSkipped ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}` : `Batch completed and Check is ready for new files: ${verifiedRecords.length} verified record${verifiedRecords.length === 1 ? "" : "s"} saved${doubleChecks ? `, ${doubleChecks} sent to Review for double check` : ""}.`);
+    setNotice(quotaSkipped
+      ? `Batch completed, but ${quotaSkipped} verified ABN${quotaSkipped === 1 ? " was" : "s were"} not saved. ${quotaMessage()}`
+      : `Batch completed: ${verifiedRecords.length} verified ABN record${verifiedRecords.length === 1 ? "" : "s"} saved${manuallyReviewedMissingAbns ? `, ${manuallyReviewedMissingAbns} invoice${manuallyReviewedMissingAbns === 1 ? "" : "s"} without an ABN manually reviewed` : ""}${doubleChecks ? `, ${doubleChecks} sent to Review for double check` : ""}.`);
   }
 
   function verifyTodayReview(reviewId: string) {
     const review = todayReviews.find((item) => item.id === reviewId);
     if (!review || review.status === "verified") return;
+    if (review.missingAbn) {
+      const verifiedAt = new Date().toISOString();
+      setTodayReviews((previous) => previous.map((item) => item.id === reviewId ? { ...item, status: "verified", verifiedAt } : item));
+      setNotice(`${review.fileName || "Invoice"} marked as manually reviewed. No ABN record was added.`);
+      return;
+    }
     if (!register.some((item) => item.abn === review.official.abn) && availableAbnSlots() <= 0) {
       setNotice(quotaMessage());
       return;
@@ -1973,7 +2104,7 @@ export default function Home() {
           <small>Prices are in Australian dollars and exclude GST where applicable. Cancel or change Starter through the secure Stripe billing portal.</small>
         </section>
 
-        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and uploaded files are processed directly in your browser.</p><div><span><b>01</b>Browser-first document processing</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
+        <section className="landing-security" id="security"><div className="security-orbit"><div className="security-ring one"/><div className="security-ring two"/><div className="security-lock">✓</div><span className="security-chip chip-one">LOCAL<br />WORKSPACE</span><span className="security-chip chip-two">OFFICIAL<br />ABN DATA</span><span className="security-chip chip-three">TEAM<br />CONTROL</span></div><div className="security-copy"><p className="landing-label">BUILT FOR TRUST</p><h2>Your supplier data stays<br />under your control.</h2><p>ABN Guard is designed for sensitive finance workflows. Company workspaces are separate, credentials stay server-side and PDF pages are sent only to the configured private extraction endpoint during verification.</p><div><span><b>01</b>Private VLM document extraction</span><span><b>02</b>Server-side ABN credentials</span><span><b>03</b>Separate company workspaces</span></div></div></section>
 
         <section className="landing-final"><p className="landing-label">START WITH YOUR NEXT SUPPLIER</p><h2>A clearer check.<br /><em>A safer payment.</em></h2><p>Give your finance team one dependable place to verify every supplier before money moves.</p><SignUpButton mode="modal" forceRedirectUrl="/app/check"><button type="button" className="landing-primary light">Join now — it’s free <span>→</span></button></SignUpButton><small>No credit card required · Set up in minutes</small></section>
 
@@ -2072,39 +2203,41 @@ export default function Home() {
           <div className="stats-row"><article><span>Saved records</span><strong>{register.length}{isCloudAccount(currentAccount) && <em> / {currentAccount.abnLimit ?? 10}</em>}</strong><small>{isCloudAccount(currentAccount) ? `${currentAccount.planName || "Free"} plan` : currentAccount.companyName}</small></article><article><span>Contract checks</span><strong>{checks.length}</strong><small>Recent results</small></article><article className="warn-stat"><span>Needs attention</span><strong>{issueCount}</strong><small>Discrepancies or risks</small></article><article><span>Last update</span><strong className="date-stat">{lastRefresh ? dateTime(lastRefresh) : "Not run"}</strong><small>{schedule === "weekly" ? "Weekly check" : "Manual check"}</small></article></div>
           <div className="verify-grid">
             <article className="panel contract-panel">
-              <div className="panel-heading"><div><span className="step">1</span><h2>Add contracts</h2></div><small>Multiple files supported</small></div>
+              <div className="panel-heading"><div><span className="step">1</span><h2>Add invoices</h2></div><small>Up to 10 per batch</small></div>
               <div className={isDragging ? "dropzone dragging" : "dropzone"} onDragOver={(event) => { event.preventDefault(); setIsDragging(true); }} onDragLeave={() => setIsDragging(false)} onDrop={(event: DragEvent<HTMLDivElement>) => { event.preventDefault(); setIsDragging(false); void handleFiles(Array.from(event.dataTransfer.files)); }} onClick={() => fileRef.current?.click()}>
-                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading contracts…" : "Drop contracts here, or click to browse"}</strong><small>Upload multiple PDF, DOCX or TXT files · processed in this browser</small>
+                <span className="upload-icon">↥</span><strong>{isParsing ? "Reading invoices…" : "Drop invoices here, or click to browse"}</strong><small>Upload up to 10 PDF, DOCX or TXT files · PDFs are read with VLM</small>
                 <input ref={fileRef} type="file" multiple accept=".pdf,.docx,.txt,.text" onChange={(event) => { void handleFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} hidden />
               </div>
-              <div className="file-recognition-summary"><span>Files recognised{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""} · {detectedEntities.length} to verify</small>}</span><strong>{documents.filter((document) => document.abns.length > 0).length} / {documents.length}</strong></div>
-              <button className="primary-button" disabled={busy || isParsing || !detectedEntities.length} onClick={() => void verifyContracts()}>{busy ? "Verifying…" : `Verify ${detectedEntities.length} ABN${detectedEntities.length === 1 ? "" : "s"}`}<span>→</span></button>
+              <div className="file-recognition-summary"><span>Invoices uploaded{documents.length > 0 && <small>{detectedDocumentAbns.length} ABN{detectedDocumentAbns.length === 1 ? "" : "s"} detected{skippedOwnAbnCount ? ` · ${skippedOwnAbnCount} workspace ABN skipped` : ""}{missingAbnDocuments.length ? ` · ${missingAbnDocuments.length} file${missingAbnDocuments.length === 1 ? "" : "s"} need ABN review` : ""} · {verificationItemCount} result{verificationItemCount === 1 ? "" : "s"}</small>}</span><strong>{documents.length} / {MAX_INVOICE_BATCH_FILES}</strong></div>
+              {missingAbnDocuments.length > 0 && <div className="missing-abn-file-list" role="alert"><span>!</span><div><b>Supplier ABN not found</b><small>{missingAbnDocuments.map((document) => document.name).join(", ")}</small></div></div>}
+              <button className="primary-button" disabled={busy || isParsing || !verificationItemCount} onClick={() => void verifyContracts()}>{isParsing ? `Processing invoices… ${documents.length} complete` : busy ? "Verifying…" : latestChecks.length ? `Re-verify ${verificationItemCount} invoice${verificationItemCount === 1 ? "" : "s"}` : verificationButtonLabel}<span>→</span></button>
             </article>
 
             <article className="panel results-panel">
-              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestChecks.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestChecks.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestChecks.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestChecks.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Review" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
-              {!latestChecks.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{latestChecks.slice(activeCheckIndex, activeCheckIndex + 1).map((check) => {
+              <div className="panel-heading"><div><span className="step">2</span><h2>Verification results</h2></div>{latestCheckGroups.length ? <div className="result-navigation" aria-label="Verification result navigation"><span>{activeCheckIndex + 1} / {latestCheckGroups.length}</span><button type="button" aria-label="Previous verification result" title="Previous result" disabled={activeCheckIndex === 0} onClick={() => setActiveCheckIndex((current) => Math.max(0, current - 1))}>←</button><button type="button" aria-label="Next verification result" title="Next result" disabled={activeCheckIndex === latestCheckGroups.length - 1} onClick={() => setActiveCheckIndex((current) => Math.min(latestCheckGroups.length - 1, current + 1))}>→</button><button type="button" className="result-clear" aria-label="Clear all verification results" title="Clear all results" onClick={clearVerificationResults}>Clear</button><button type="button" className="result-complete" aria-label="Complete this verification batch" title="Save verified records and send this batch to Review" onClick={completeVerificationBatch}>Complete</button></div> : <small>File vs ABN Lookup</small>}</div>
+              {!latestCheckGroups.length ? <div className="empty-state"><span>✓</span><h3>Ready to verify</h3><p>Upload one or more contracts to compare the entity name, ABN and location.</p></div> : <div className="check-list">{activeResultChecks.map((check) => {
                 const safeContractName = check.contractName && check.contractName.length <= 120 ? check.contractName : "Not found in file";
                 const sourceLabel = check.official.source === "official" ? "Official ABN Lookup service" : check.official.source === "demo" ? "Built-in demo snapshot" : "Pending official lookup";
                 const officialLocation = [check.official.state, check.official.postcode].filter(Boolean).join(" ");
                 const sourceDocuments = documents.filter((document) => check.fileIds?.includes(document.id));
+                if (check.missingAbn) return <MissingAbnVerification key={check.id} check={check} documents={sourceDocuments} onReviewed={(reviewed) => setCheckReviewed(check.id, reviewed)} />;
                 const isSelectedPayee = isCheckSelectedPayee(check);
                 const roleCandidate = sourceDocuments.flatMap((document) => document.abnRoles).filter((candidate) => candidate.abn === check.abn).sort((left, right) => right.confidence - left.confidence)[0];
                 const manuallySelected = isSelectedPayee && sourceDocuments.some((document) => document.selectedPayeeAbns.includes(check.abn) && document.payeeSelection === "manual");
-                const roleLabel = isSelectedPayee ? manuallySelected ? "Selected payee" : "Suggested payee" : roleCandidate?.role === "payer" ? "Customer / ignored" : "Not selected";
+                const roleLabel = isSelectedPayee ? "Invoice ABN" : roleCandidate?.role === "payer" ? "Your ABN / skipped" : "Not selected";
                 const nameComparison = safeContractName === "Not found in file" || !check.official.entityName ? null : compareCompanyNames(safeContractName, check.official.entityName);
                 const abnMatch = onlyDigits(check.abn) === onlyDigits(check.official.abn);
                 const locationMatch = !check.contractLocation ? null : Boolean(officialLocation) && normalizeLocation(check.contractLocation) === normalizeLocation(officialLocation);
                 const isVerified = checkIsVerified(check);
                 return <div className={isSelectedPayee && !isVerified ? "check-card alert" : "check-card"} key={check.id}>
-                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : `${roleCandidate.reasons[0]} · ${Math.round(roleCandidate.confidence * 100)}% confidence`}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Use as payee</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Review required"}</span>{checkRequiresReview(check) && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
+                  <div className="check-card-top"><div><small>{formatAbn(check.abn)}</small><h3>{check.official.entityName || "Entity pending lookup"}</h3>{roleCandidate && <p className="role-confidence">{manuallySelected ? "Manually selected in Verification results" : roleCandidate.reasons[0]}</p>}</div><div className="check-result-actions"><span className={isSelectedPayee ? "payee-role-pill selected" : roleCandidate?.role === "payer" ? "payee-role-pill ignored" : "payee-role-pill"}>{roleLabel}</span>{!isSelectedPayee ? <button type="button" className="select-payee-result" onClick={() => selectPayeeFromResult(check)}>Verify this ABN</button> : <><span className={isVerified ? "result-pill ok" : "result-pill issue"}>{isVerified ? "Verified" : check.issues.length ? `${check.issues.length} issue${check.issues.length === 1 ? "" : "s"}` : "Review required"}</span>{checkRequiresReview(check) && <label className={check.reviewed ? "review-check checked" : bankSelectionMissing(check) ? "review-check disabled" : "review-check"}><input type="checkbox" checked={check.reviewed} disabled={bankSelectionMissing(check)} onChange={(event) => setCheckReviewed(check.id, event.target.checked)} /><span>{bankSelectionMissing(check) ? "Select bank account first" : "Reviewed"}</span></label>}</>}</div></div>
                   <div className="verification-compare">
                     <section className="evidence-panel file-evidence">
                       <div className="evidence-title"><span>FILE</span><div><b>Details from file</b><small className="file-source-links">{sourceDocuments.length ? sourceDocuments.map((document, index) => <Fragment key={document.id}>{index > 0 && <span>, </span>}<a href={document.url} target="_blank" rel="noreferrer" title={`Open ${document.name}`}>{document.name}</a></Fragment>) : check.fileName}</small></div></div>
                       <dl>
-                        <div><dt>Entity name</dt><dd className="file-entity-value">{editingCheckNameId === check.id ? <form className="entity-name-editor" onSubmit={(event) => { event.preventDefault(); saveCheckName(check.id); }}><input autoFocus value={checkNameDraft} onChange={(event) => setCheckNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") cancelEditingCheckName(); }} aria-label="Detected entity name" /><button type="submit" aria-label="Save detected entity name">Save</button><button type="button" onClick={cancelEditingCheckName} aria-label="Cancel entity name edit">Cancel</button></form> : <><span>{safeContractName}</span><button type="button" onClick={() => startEditingCheckName(check)}>Edit</button></>}</dd></div>
+                        <div><dt className="field-label-with-help">Entity name<button className="entity-name-help" type="button" aria-label="About detected entity names"><span aria-hidden="true">?</span><span className="entity-name-tooltip" role="tooltip"><strong>Review the detected company name</strong>The company name may not always be identified accurately from the uploaded document. Select Edit to correct it before completing verification.</span></button></dt><dd className="file-entity-value">{editingCheckNameId === check.id ? <form className="entity-name-editor" onSubmit={(event) => { event.preventDefault(); saveCheckName(check.id); }}><input autoFocus value={checkNameDraft} onChange={(event) => setCheckNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") cancelEditingCheckName(); }} aria-label="Detected entity name" /><button type="submit" aria-label="Save detected entity name">Save</button><button type="button" onClick={cancelEditingCheckName} aria-label="Cancel entity name edit">Cancel</button></form> : <><span>{safeContractName}</span><button type="button" onClick={() => startEditingCheckName(check)}>Edit</button></>}</dd></div>
                         <div><dt>ABN</dt><dd>{formatAbn(check.abn)}</dd></div>
-                        <div><dt>Location</dt><dd>{check.contractLocation || "Not found in file"}</dd></div>
+                        <div><dt>Address</dt><dd>{check.contractAddress || check.contractLocation || "Not found in file"}</dd></div>
                       </dl>
                     </section>
                     <section className="evidence-panel lookup-evidence">
@@ -2130,7 +2263,7 @@ export default function Home() {
         {tab === "today" && <div className="page-content today-page">
           <div className="today-summary">
             <article className="panel"><span className="today-summary-icon attention">!</span><div><small>Double check</small><strong>{doubleCheckItems.length}</strong><p>Items still waiting for a decision</p></div></article>
-            <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved and saved to Records</p></div></article>
+            <article className="panel"><span className="today-summary-icon verified">✓</span><div><small>Verified</small><strong>{verifiedTodayItems.length}</strong><p>Approved checks and saved records</p></div></article>
           </div>
           <div className="today-day-list">{todayDayGroups.map(({ day, items }) => {
             const isCurrent = day === todayDayKey;
