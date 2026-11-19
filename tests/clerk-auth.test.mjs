@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 test("integrates Clerk with visible controls and PostgreSQL-scoped identities", async () => {
   const [layout, page, proxy, session, database, schema, migration, nextConfig, packageJson, dockerfile, deployWorkflow] = await Promise.all([
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../proxy.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/session.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/database.ts", import.meta.url), "utf8"),
@@ -21,7 +23,7 @@ test("integrates Clerk with visible controls and PostgreSQL-scoped identities", 
   assert.match(packageJson, /"db:migrate"/);
   assert.match(packageJson, /next dev --port 3001/);
   assert.match(layout, /<body>[\s\S]*<ClerkProvider>[\s\S]*\{children\}[\s\S]*<\/ClerkProvider>[\s\S]*<\/body>/);
-  assert.match(proxy, /clerkMiddleware\(\)/);
+  assert.match(proxy, /clerkMiddleware\(/);
   assert.match(page, /SignInButton/);
   assert.match(page, /SignUpButton/);
   assert.match(page, /className="account-signout"[\s\S]*Sign out/);

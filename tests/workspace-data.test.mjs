@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 import { workspaceStateFromRows, workspaceStateRows } from "../app/server/database.ts";
 
 const marker = { namespace: "meta", item_id: "state", data_json: JSON.stringify({ version: 1 }) };
@@ -43,7 +45,7 @@ test("uses legacy state until the independent-record completion marker exists", 
 
 test("defines authenticated app URLs and an additive workspace-data migration", async () => {
   const [page, appRoute, schema, migration, workspaceRoute] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/app/[[...section]]/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../drizzle-pg/0000_initial.sql", import.meta.url), "utf8"),
@@ -53,7 +55,7 @@ test("defines authenticated app URLs and an additive workspace-data migration", 
   for (const path of ["/app/check", "/app/review", "/app/records", "/app/alerts", "/app/settings"]) {
     assert.match(page, new RegExp(path.replaceAll("/", "\\/")));
   }
-  assert.match(appRoute, /import Home from "\.\.\/\.\.\/page"/);
+  assert.match(appRoute, /import Home from "\.\.\/\.\.\/workspace-app"/);
   assert.match(schema, /workspaceData = pgTable\("workspace_data"/);
   assert.match(migration, /create table workspace_data/i);
   assert.match(workspaceRoute, /saveWorkspaceState/);

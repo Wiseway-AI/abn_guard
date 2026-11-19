@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 test("supports revocable sessions and verified permanent account deletion", async () => {
   const [schema, migration, session, revokeRoute, requestRoute, deleteRoute, page] = await Promise.all([
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
@@ -10,7 +12,7 @@ test("supports revocable sessions and verified permanent account deletion", asyn
     readFile(new URL("../app/api/account/sessions/revoke/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/account/delete/request/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/account/delete/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
   ]);
 
   assert.match(schema, /sessionVersion: integer\("session_version"\)/);

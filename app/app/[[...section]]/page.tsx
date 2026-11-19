@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import Home from "../../page";
+import Home from "../../workspace-app";
 
 export const metadata: Metadata = {
   title: "Workspace",

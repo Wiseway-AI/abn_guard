@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 test("records changes only during weekly or manual monitoring checks", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readUiSource();
   const historyToggle = page.slice(page.indexOf("async function toggleAbnHistory"), page.indexOf("function persistAccounts"));
 
   assert.doesNotMatch(historyToggle, /compareRecord|setChanges/);
