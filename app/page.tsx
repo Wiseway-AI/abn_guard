@@ -723,6 +723,10 @@ export default function Home() {
   const currentAccountRef = useRef<Account | null>(null);
   // Last workspace payload known to match the server (null = take the next payload as the baseline).
   const lastSavedWorkspaceRef = useRef<string | null>(null);
+  // Server revision the next save is based on; saves are chained so each one sees the previous result.
+  const workspaceRevisionRef = useRef<string | null>(null);
+  const workspaceSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const workspaceConflictRef = useRef(false);
 
   useEffect(() => {
     currentAccountRef.current = currentAccount;
@@ -750,6 +754,7 @@ export default function Home() {
           abnConfigured?: boolean;
           vlmConfigured?: boolean;
           state?: CloudWorkspaceState;
+          revision?: string | null;
           user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" | "clerk" };
           workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
         };
@@ -760,8 +765,8 @@ export default function Home() {
         setVlmConfigured(Boolean(session.vlmConfigured));
         if (session.authenticated && session.user && session.workspace) {
           const workspaceResult = session.state
-            ? { state: session.state }
-            : await fetch("/api/workspace").then((response) => response.json() as Promise<{ state?: CloudWorkspaceState }>);
+            ? { state: session.state, revision: session.revision ?? null }
+            : await fetch("/api/workspace").then((response) => response.json() as Promise<{ state?: CloudWorkspaceState; revision?: string | null }>);
           const savedAccount = workspaceResult.state?.account ?? {};
           const account: Account = {
             id: `cloud-${session.user.id}`,
@@ -790,6 +795,8 @@ export default function Home() {
           setDocuments([]);
           setChecks([]);
           lastSavedWorkspaceRef.current = null;
+          workspaceRevisionRef.current = workspaceResult.revision ?? null;
+          workspaceConflictRef.current = false;
           setCloudWorkspaceReady(true);
         } else {
           const sessionId = localStorage.getItem(STORAGE.session);
@@ -928,26 +935,37 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated || !cloudWorkspaceReady || !isCloudAccount(currentAccount)) return;
-    const payload = JSON.stringify({ state: { account: currentAccount, register, changes, history, today: todayReviews, schedule, lastRefresh } });
+    const state = { account: currentAccount, register, changes, history, today: todayReviews, schedule, lastRefresh };
+    const payload = JSON.stringify(state);
     // The first payload after loading is what the server just returned, so don't write it back.
     if (lastSavedWorkspaceRef.current === null) {
       lastSavedWorkspaceRef.current = payload;
       return;
     }
-    if (payload === lastSavedWorkspaceRef.current) return;
-    const timer = window.setTimeout(async () => {
-      const response = await fetch("/api/workspace", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: payload,
+    if (payload === lastSavedWorkspaceRef.current || workspaceConflictRef.current) return;
+    const timer = window.setTimeout(() => {
+      workspaceSaveChainRef.current = workspaceSaveChainRef.current.then(async () => {
+        if (workspaceConflictRef.current || payload === lastSavedWorkspaceRef.current) return;
+        try {
+          const response = await fetch("/api/workspace", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ state, baseRevision: workspaceRevisionRef.current }),
+          });
+          const result = await response.json() as { error?: string; code?: string; revision?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
+          if (!response.ok) {
+            // Another tab or device saved first: stop autosaving so this tab cannot overwrite that work.
+            if (result.code === "workspace_conflict") workspaceConflictRef.current = true;
+            setNotice(result.error || "Your workspace could not be saved.");
+            return;
+          }
+          lastSavedWorkspaceRef.current = payload;
+          if (result.revision) workspaceRevisionRef.current = result.revision;
+          if (result.workspace) setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
+        } catch {
+          setNotice("Your workspace could not be saved. Check your connection and try again.");
+        }
       });
-      const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
-      if (!response.ok) {
-        setNotice(result.error || "Your workspace could not be saved.");
-        return;
-      }
-      lastSavedWorkspaceRef.current = payload;
-      if (result.workspace) setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
     }, 450);
     return () => window.clearTimeout(timer);
   }, [changes, cloudWorkspaceReady, currentAccount?.companyName, currentAccount?.companyRecord, currentAccount?.ownAbn, currentAccount?.setupComplete, history, hydrated, lastRefresh, register, schedule, todayReviews]);

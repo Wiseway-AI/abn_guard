@@ -1,4 +1,4 @@
-import { loadWorkspaceState, publicWorkspace, registerUsage } from "../../../server/database";
+import { loadWorkspace, publicWorkspace, registerUsage } from "../../../server/database";
 import { sessionFromRequest } from "../../../server/session";
 
 export async function GET(request: Request) {
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   };
   const headers = { "Cache-Control": "no-store, max-age=0" };
   if (!session) return Response.json({ authenticated: false, googleConfigured, googleClientId, ...services }, { headers });
-  const state = await loadWorkspaceState(session.workspace);
+  const { state, revision } = await loadWorkspace(session.workspace);
   return Response.json({
     authenticated: true,
     googleConfigured: true,
@@ -25,5 +25,6 @@ export async function GET(request: Request) {
     workspace: publicWorkspace(session.workspace, registerUsage(state)),
     // The workspace state is already loaded for the usage count; return it to avoid a second load.
     state,
+    revision,
   }, { headers });
 }

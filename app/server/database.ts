@@ -12,7 +12,12 @@ type DatabaseStatement = {
   run<T = Record<string, unknown>>(): Promise<DatabaseResult<T>>;
   all<T = Record<string, unknown>>(): Promise<DatabaseResult<T>>;
 };
-type DatabaseLike = { prepare(query: string): DatabaseStatement; batch(statements: DatabaseStatement[]): Promise<DatabaseResult[]> };
+type DatabaseLike = {
+  prepare(query: string): DatabaseStatement;
+  batch(statements: DatabaseStatement[]): Promise<DatabaseResult[]>;
+  /** Run `work` in one transaction; statements prepared from the callback's handle join it. */
+  transaction<T>(work: (transaction: Pick<DatabaseLike, "prepare">) => Promise<T>): Promise<T>;
+};
 
 let postgresClient: ReturnType<typeof postgres> | null = null;
 let databaseAdapter: DatabaseLike | null = null;
@@ -71,8 +76,10 @@ export type WorkspaceRow = {
   stripe_subscription_id: string | null;
   stripe_price_id: string | null;
   current_period_end: number | null;
-  state_json: string;
 };
+
+// Session lookups run on every authenticated request; never select the legacy state_json blob here.
+const WORKSPACE_COLUMNS = "id, owner_user_id, name, plan, subscription_status, stripe_subscription_id, stripe_price_id, current_period_end";
 
 export type UserRow = {
   id: string;
@@ -122,6 +129,12 @@ export async function database() {
           return results;
         });
       },
+      async transaction<T>(work: (transaction: Pick<DatabaseLike, "prepare">) => Promise<T>) {
+        return await client.begin(async (transaction) => {
+          const executor = transaction as unknown as QueryExecutor;
+          return await work({ prepare: (query: string) => new PostgresStatement(query, () => executor) });
+        }) as T;
+      },
     };
   }
   return databaseAdapter;
@@ -154,7 +167,7 @@ export async function upsertGoogleUser(profile: { id: string; email: string; nam
       ON CONFLICT(id) DO UPDATE SET email = excluded.email, name = excluded.name, picture = excluded.picture, email_verified_at = excluded.email_verified_at, updated_at = excluded.updated_at`)
       .bind(userId, profile.email, profile.name, profile.picture, now, now, now).run();
   }
-  const existing = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(userId).first<WorkspaceRow>();
+  const existing = await db.prepare(`SELECT ${WORKSPACE_COLUMNS} FROM workspaces WHERE owner_user_id = ?`).bind(userId).first<WorkspaceRow>();
   if (!existing) {
     await db.prepare(`INSERT INTO workspaces (id, owner_user_id, name, plan, subscription_status, state_json, created_at, updated_at)
       VALUES (?, ?, ?, 'free', 'free', '{}', ?, ?)`)
@@ -166,7 +179,7 @@ export async function upsertGoogleUser(profile: { id: string; email: string; nam
 export async function getUserWorkspace(userId: string) {
   const db = await database();
   const user = await db.prepare("SELECT id, email, name, picture, auth_provider, clerk_user_id, password_hash, email_verified_at, stripe_customer_id, session_version FROM users WHERE id = ?").bind(userId).first<UserRow>();
-  const workspace = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(userId).first<WorkspaceRow>();
+  const workspace = await db.prepare(`SELECT ${WORKSPACE_COLUMNS} FROM workspaces WHERE owner_user_id = ?`).bind(userId).first<WorkspaceRow>();
   return user && workspace ? { user, workspace } : null;
 }
 
@@ -176,7 +189,7 @@ export async function getClerkUserWorkspace(clerkUserId: string) {
     .bind(clerkUserId)
     .first<UserRow>();
   if (!user) return null;
-  const workspace = await db.prepare("SELECT * FROM workspaces WHERE owner_user_id = ?").bind(user.id).first<WorkspaceRow>();
+  const workspace = await db.prepare(`SELECT ${WORKSPACE_COLUMNS} FROM workspaces WHERE owner_user_id = ?`).bind(user.id).first<WorkspaceRow>();
   return workspace ? { user, workspace } : null;
 }
 
@@ -313,58 +326,94 @@ export function workspaceStateFromRows(rows: WorkspaceDataRow[], fallback: Recor
   return state;
 }
 
-export async function loadWorkspaceState(workspace: WorkspaceRow) {
-  const fallback = parseWorkspaceState(workspace.state_json);
+export class WorkspaceConflictError extends Error {
+  constructor() {
+    super("This workspace was changed in another tab or device. Reload to get the latest version.");
+    this.name = "WorkspaceConflictError";
+  }
+}
+
+function markerRevision(row: WorkspaceDataRow | undefined) {
+  if (!row) return null;
+  try {
+    const revision = (JSON.parse(row.data_json) as { revision?: unknown }).revision;
+    return typeof revision === "string" ? revision : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Load the workspace and its revision token. The token is null until the workspace has been written
+ * as independent records; only then is the legacy state_json blob read, as a one-off fallback.
+ */
+export async function loadWorkspace(workspace: Pick<WorkspaceRow, "id">) {
   const db = await database();
   const result = await db.prepare("SELECT namespace, item_id, data_json FROM workspace_data WHERE workspace_id = ?")
     .bind(workspace.id)
     .all<WorkspaceDataRow>();
-  return workspaceStateFromRows(result.results ?? [], fallback);
+  const rows = result.results ?? [];
+  const marker = rows.find((row) => row.namespace === "meta" && row.item_id === WORKSPACE_STATE_MARKER);
+  if (marker) return { state: workspaceStateFromRows(rows), revision: markerRevision(marker) };
+  const legacy = await db.prepare("SELECT state_json FROM workspaces WHERE id = ?").bind(workspace.id).first<{ state_json: string }>();
+  return { state: parseWorkspaceState(legacy?.state_json ?? "{}"), revision: null };
 }
 
-async function runWorkspaceBatches(db: DatabaseLike, statements: DatabaseStatement[]) {
-  const batchSize = 75;
-  for (let offset = 0; offset < statements.length; offset += batchSize) {
-    await db.batch(statements.slice(offset, offset + batchSize));
-  }
+export async function loadWorkspaceState(workspace: Pick<WorkspaceRow, "id">) {
+  return (await loadWorkspace(workspace)).state;
 }
 
-export async function saveWorkspaceState(workspaceId: string, state: Record<string, unknown>, stateJson = JSON.stringify(state)) {
+/**
+ * Save the whole workspace atomically. `baseRevision` is the revision the client loaded or last saved:
+ * a mismatch means another tab or device saved in between, so the save is rejected instead of
+ * silently overwriting (or deleting) that work. `undefined` skips the check for older clients.
+ * Returns the new revision.
+ */
+export async function saveWorkspaceState(workspaceId: string, state: Record<string, unknown>, baseRevision?: string | null) {
   const db = await database();
   const updatedAt = new Date().toISOString();
-  await db.prepare("UPDATE workspaces SET state_json = ?, updated_at = ? WHERE id = ?").bind(stateJson, updatedAt, workspaceId).run();
+  const revision = crypto.randomUUID();
+  return await db.transaction(async (transaction) => {
+    // Serialise concurrent saves of the same workspace.
+    const locked = await transaction.prepare("SELECT id FROM workspaces WHERE id = ? FOR UPDATE").bind(workspaceId).first<{ id: string }>();
+    if (!locked) throw new Error("Workspace not found.");
 
-  // Readers fall back to state_json until the independent records are fully written.
-  await db.prepare("DELETE FROM workspace_data WHERE workspace_id = ? AND namespace = 'meta' AND item_id = ?")
-    .bind(workspaceId, WORKSPACE_STATE_MARKER)
-    .run();
+    const existingResult = await transaction.prepare("SELECT namespace, item_id, data_json FROM workspace_data WHERE workspace_id = ?")
+      .bind(workspaceId)
+      .all<WorkspaceDataRow>();
+    const existingRows = existingResult.results ?? [];
+    const currentRevision = markerRevision(existingRows.find((row) => row.namespace === "meta" && row.item_id === WORKSPACE_STATE_MARKER));
+    if (baseRevision !== undefined && baseRevision !== currentRevision) throw new WorkspaceConflictError();
 
-  const existingResult = await db.prepare("SELECT namespace, item_id, data_json FROM workspace_data WHERE workspace_id = ? AND namespace != 'meta'")
-    .bind(workspaceId)
-    .all<WorkspaceDataRow>();
-  const existing = new Map((existingResult.results ?? []).map((row) => [`${row.namespace}\u0000${row.item_id}`, row.data_json]));
-  const desiredRows = workspaceStateRows(state);
-  const desiredKeys = new Set(desiredRows.map((row) => `${row.namespace}\u0000${row.item_id}`));
-  const statements: DatabaseStatement[] = [];
+    const dataRows = existingRows.filter((row) => row.namespace !== "meta");
+    const existing = new Map(dataRows.map((row) => [`${row.namespace}\u0000${row.item_id}`, row.data_json]));
+    const desiredRows = workspaceStateRows(state);
+    const desiredKeys = new Set(desiredRows.map((row) => `${row.namespace}\u0000${row.item_id}`));
 
-  for (const row of desiredRows) {
-    if (existing.get(`${row.namespace}\u0000${row.item_id}`) === row.data_json) continue;
-    statements.push(db.prepare(`INSERT INTO workspace_data (workspace_id, namespace, item_id, data_json, updated_at)
-      VALUES (?, ?, ?, ?, ?)
+    for (const row of desiredRows) {
+      if (existing.get(`${row.namespace}\u0000${row.item_id}`) === row.data_json) continue;
+      await transaction.prepare(`INSERT INTO workspace_data (workspace_id, namespace, item_id, data_json, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_id, namespace, item_id) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at`)
+        .bind(workspaceId, row.namespace, row.item_id, row.data_json, updatedAt)
+        .run();
+    }
+    for (const row of dataRows) {
+      if (desiredKeys.has(`${row.namespace}\u0000${row.item_id}`)) continue;
+      await transaction.prepare("DELETE FROM workspace_data WHERE workspace_id = ? AND namespace = ? AND item_id = ?")
+        .bind(workspaceId, row.namespace, row.item_id)
+        .run();
+    }
+    // The marker doubles as the revision token. state_json is no longer written: once the marker
+    // exists, readers (including the previous release) use the independent records.
+    await transaction.prepare(`INSERT INTO workspace_data (workspace_id, namespace, item_id, data_json, updated_at)
+      VALUES (?, 'meta', ?, ?, ?)
       ON CONFLICT(workspace_id, namespace, item_id) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at`)
-      .bind(workspaceId, row.namespace, row.item_id, row.data_json, updatedAt));
-  }
-  for (const row of existingResult.results ?? []) {
-    if (desiredKeys.has(`${row.namespace}\u0000${row.item_id}`)) continue;
-    statements.push(db.prepare("DELETE FROM workspace_data WHERE workspace_id = ? AND namespace = ? AND item_id = ?")
-      .bind(workspaceId, row.namespace, row.item_id));
-  }
-  await runWorkspaceBatches(db, statements);
-  await db.prepare(`INSERT INTO workspace_data (workspace_id, namespace, item_id, data_json, updated_at)
-    VALUES (?, 'meta', ?, ?, ?)
-    ON CONFLICT(workspace_id, namespace, item_id) DO UPDATE SET data_json = excluded.data_json, updated_at = excluded.updated_at`)
-    .bind(workspaceId, WORKSPACE_STATE_MARKER, JSON.stringify({ version: WORKSPACE_STATE_VERSION }), updatedAt)
-    .run();
+      .bind(workspaceId, WORKSPACE_STATE_MARKER, JSON.stringify({ version: WORKSPACE_STATE_VERSION, revision }), updatedAt)
+      .run();
+    await transaction.prepare("UPDATE workspaces SET updated_at = ? WHERE id = ?").bind(updatedAt, workspaceId).run();
+    return revision;
+  });
 }
 
 export function registerUsage(state: Record<string, unknown>) {
