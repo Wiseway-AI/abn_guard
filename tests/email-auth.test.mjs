@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 import { hashPassword, sameOriginRequest, validEmail, verificationCode, verifyPassword } from "../app/server/email-auth.ts";
 
 test("hashes email-account passwords with a unique PBKDF2 salt", async () => {
@@ -38,7 +40,7 @@ test("accepts the configured public origin when a reverse proxy changes the requ
 
 test("keeps email registration and verification on the server", async () => {
   const [page, registerRoute, verifyRoute, googleCredentialRoute, migration] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/api/auth/email/register/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/email/verify/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),

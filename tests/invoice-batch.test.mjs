@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { readUiSource } from "./ui-source.mjs";
 import { readFile } from "node:fs/promises";
 
 import { filesWithoutAbn, groupVerificationChecksByFile, mapWithConcurrency, MAX_INVOICE_BATCH_FILES, selectInvoiceBatchFiles } from "../app/invoice-batch.ts";
@@ -53,7 +55,7 @@ test("honours extraction concurrency while preserving file order", async () => {
 });
 
 test("requires missing-ABN invoices to be reviewed without saving them to Records", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readUiSource();
 
   assert.match(page, /No valid ABN was found in this file/);
   assert.match(page, /check\.missingAbn && !check\.reviewed/);
@@ -62,7 +64,7 @@ test("requires missing-ABN invoices to be reviewed without saving them to Record
 });
 
 test("keeps every uploaded invoice represented and verifies every ABN returned for it", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readUiSource();
 
   assert.match(page, /documents\.flatMap\(detectedEntitiesForDocument\)/);
   assert.match(page, /verificationSelection\.verificationAbns\.map\(\(abn\)/);
@@ -80,7 +82,7 @@ test("keeps every uploaded invoice represented and verifies every ABN returned f
 });
 
 test("does not label an invoice ABN as a customer or ignored result", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readUiSource();
 
   assert.doesNotMatch(page, /Customer \/ ignored|Suggested payee|Use as payee/);
   assert.match(page, /Invoice ABN/);

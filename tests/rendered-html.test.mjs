@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 test("configures the ABN Guard application shell and security headers", async () => {
   const [config, layout, page] = await Promise.all([
     readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
   ]);
   assert.match(config, /output: "standalone"/);
   assert.match(config, /Strict-Transport-Security/);
@@ -38,7 +40,7 @@ test("keeps service credentials on the server", async () => {
   const [route, accountRoute, page, exampleEnv] = await Promise.all([
     readFile(new URL("../app/api/abn/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/account-auth/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
   ]);
 
@@ -59,7 +61,7 @@ test("keeps service credentials on the server", async () => {
 
 test("presents Google and verified email as account-bound sign-in methods", async () => {
   const [page, credential, verifier, database, styles] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/api/auth/google/credential/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/google-identity.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/server/database.ts", import.meta.url), "utf8"),
@@ -105,7 +107,7 @@ test("presents Google and verified email as account-bound sign-in methods", asyn
 
 test("opens Stripe Checkout without leaving the upgrade button stuck", async () => {
   const [page, checkoutRoute, portalRoute, syncRoute] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/api/billing/checkout/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/billing/portal/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/billing/sync/route.ts", import.meta.url), "utf8"),
@@ -126,7 +128,7 @@ test("protects ABN lookups and publishes product trust pages", async () => {
   const [abnRoute, webhookRoute, page, privacy, terms, feedback] = await Promise.all([
     readFile(new URL("../app/api/abn/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/billing/webhook/route.ts", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/terms/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/api/feedback/route.ts", import.meta.url), "utf8"),

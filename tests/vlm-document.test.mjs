@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { readUiSource } from "./ui-source.mjs";
+
 import {
   assessPdfText,
   isValidAustralianAbn,
@@ -69,7 +71,7 @@ test("uses a Qwen3-VL prompt that extracts all ABNs without payer or payee class
 
 test("keeps the active VLM implementation server-side without exposing credentials", async () => {
   const [page, route, privacy, envExample] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readUiSource(),
     readFile(new URL("../app/api/vlm/extract/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/privacy/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../.env.example", import.meta.url), "utf8"),
