@@ -28,13 +28,13 @@ jobs:
       DESIRED_COUNT: ${{ github.ref_name == 'production' && '2' || '1' }}
     steps:
       - uses: actions/checkout@v5
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - id: ecr
         uses: aws-actions/amazon-ecr-login@v2
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - name: Validate public build configuration
         env:
           CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
@@ -48,7 +48,7 @@ jobs:
           echo "exists=$([[ "$IMAGE_COUNT" == "1" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Build and push immutable ARM64 image
         if: steps.image.outputs.exists != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/arm64
@@ -59,6 +59,16 @@ jobs:
             NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # Each environment bakes its own public Clerk key and URL into the image, so QA and production
+      # images differ. Scan the exact image about to be deployed (including a reused one) before
+      # any task definition, migration or rollout uses it.
+      - name: Scan deployment image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.registry }}/abn-guard:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
       - name: Render task definition
         id: task
         shell: bash
