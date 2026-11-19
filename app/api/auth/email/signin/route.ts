@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase().slice(0, 180) : "";
     const password = typeof body.password === "string" ? body.password : "";
     if (!validEmail(email) || !password) return Response.json({ error: "Email or password is incorrect." }, { status: 401 });
-    const rateLimit = await loginRateLimit(request, "email_signin", email, 10, 15 * 60);
+    const rateLimit = await loginRateLimit(request, "email_signin", email, 10, 15 * 60, 30);
     if (!rateLimit.allowed) {
       await recordLoginFailure(request, "email", email, rateLimit.actorHash, true);
       return Response.json({ error: "Too many sign-in attempts. Try again later." }, { status: 429 });

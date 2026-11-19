@@ -4,6 +4,7 @@ import { ChangeEvent, DragEvent, FormEvent, Fragment, useEffect, useMemo, useRef
 import { SignInButton, SignUpButton, useAuth, useClerk } from "@clerk/nextjs";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { classifyAbnRoles, selectAbnsForVerification, type AbnRoleCandidate } from "./abn-role";
 import { accountFileKey, accountStorageKey } from "./account-scope";
 import { bankDetailsKey, bankDetailsMatch, extractBankDetails, formatBsb, type BankDetails } from "./bank-details";
@@ -500,7 +501,8 @@ async function readContract(file: File, vlmEnabled: boolean): Promise<ContractRe
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "pdf") {
     const pdfjs = await import("pdfjs-dist");
-    pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+    // Bundled as a content-hashed /_next/static asset, so it is cached long-term and always matches pdfjs-dist.
+    pdfjs.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
     const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
     const pages: string[] = [];
     for (let i = 1; i <= pdf.numPages; i += 1) {
@@ -660,6 +662,8 @@ function TodaySection({ title, items, onVerify, onOpenFile }: { title: string; i
 export default function Home() {
   const { isLoaded: clerkLoaded, isSignedIn: clerkSignedIn } = useAuth();
   const { signOut: clerkSignOut } = useClerk();
+  const pathname = usePathname();
+  const isAppPath = pathname === "/app" || pathname.startsWith("/app/");
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [currentAccount, setCurrentAccount] = useState<Account | null>(null);
   const [authMode, setAuthMode] = useState<"signin" | "register">("register");
@@ -691,6 +695,7 @@ export default function Home() {
   const [expandedAbns, setExpandedAbns] = useState<string[]>([]);
   const [loadingHistoryAbns, setLoadingHistoryAbns] = useState<string[]>([]);
   const [apiConfigured, setApiConfigured] = useState(false);
+  const [vlmConfigured, setVlmConfigured] = useState(false);
   const [schedule, setSchedule] = useState<MonitoringSchedule>("weekly");
   const [lastRefresh, setLastRefresh] = useState("");
   const [query, setQuery] = useState("");
@@ -705,6 +710,8 @@ export default function Home() {
   const [editingCheckNameId, setEditingCheckNameId] = useState<string | null>(null);
   const [checkNameDraft, setCheckNameDraft] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  // Clerk sign-in state that the last completed session hydration ran with (null = Clerk not loaded yet).
+  const [hydratedForClerk, setHydratedForClerk] = useState<boolean | null>(null);
   const [cloudWorkspaceReady, setCloudWorkspaceReady] = useState(false);
   const [googleConfigured, setGoogleConfigured] = useState(false);
   const [googleClientId, setGoogleClientId] = useState("");
@@ -713,9 +720,24 @@ export default function Home() {
   const fileRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const googleButtonRef = useRef<HTMLDivElement>(null);
+  const currentAccountRef = useRef<Account | null>(null);
+  // Last workspace payload known to match the server (null = take the next payload as the baseline).
+  const lastSavedWorkspaceRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentAccountRef.current = currentAccount;
+  }, [currentAccount]);
 
   useEffect(() => {
     let cancelled = false;
+    const clerkState = clerkLoaded ? Boolean(clerkSignedIn) : null;
+    const loadedAccount = currentAccountRef.current;
+    // When Clerk finishes loading and agrees with the session we already loaded, skip a second
+    // fetch: re-hydrating resets the workspace state and makes the page flash after sign-in.
+    if (clerkLoaded && isCloudAccount(loadedAccount) && (loadedAccount.authProvider !== "clerk" || clerkSignedIn)) {
+      queueMicrotask(() => setHydratedForClerk(clerkState));
+      return;
+    }
     async function hydrate() {
       const storedAccounts = JSON.parse(localStorage.getItem(STORAGE.accounts) ?? "[]") as Account[];
       setAccounts(storedAccounts);
@@ -725,15 +747,21 @@ export default function Home() {
           authenticated?: boolean;
           googleConfigured?: boolean;
           googleClientId?: string;
+          abnConfigured?: boolean;
+          vlmConfigured?: boolean;
+          state?: CloudWorkspaceState;
           user?: { id: string; email: string; name: string; picture: string; authProvider?: "google" | "email" | "clerk" };
           workspace?: { id: string; name: string; plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number };
         };
         if (cancelled) return;
         setGoogleConfigured(Boolean(session.googleConfigured));
         setGoogleClientId(session.googleClientId ?? "");
+        setApiConfigured(Boolean(session.abnConfigured));
+        setVlmConfigured(Boolean(session.vlmConfigured));
         if (session.authenticated && session.user && session.workspace) {
-          const workspaceResponse = await fetch("/api/workspace");
-          const workspaceResult = await workspaceResponse.json() as { state?: CloudWorkspaceState };
+          const workspaceResult = session.state
+            ? { state: session.state }
+            : await fetch("/api/workspace").then((response) => response.json() as Promise<{ state?: CloudWorkspaceState }>);
           const savedAccount = workspaceResult.state?.account ?? {};
           const account: Account = {
             id: `cloud-${session.user.id}`,
@@ -761,6 +789,7 @@ export default function Home() {
           setLastRefresh(workspaceResult.state?.lastRefresh ?? "");
           setDocuments([]);
           setChecks([]);
+          lastSavedWorkspaceRef.current = null;
           setCloudWorkspaceReady(true);
         } else {
           const sessionId = localStorage.getItem(STORAGE.session);
@@ -774,9 +803,11 @@ export default function Home() {
         setCurrentAccount(active);
         if (active) loadAccountData(active.id);
       } finally {
-        if (!cancelled) setHydrated(true);
+        if (!cancelled) {
+          setHydrated(true);
+          setHydratedForClerk(clerkState);
+        }
       }
-      fetch("/api/abn", { cache: "no-store" }).then((response) => response.json()).then((result) => setApiConfigured(Boolean(result.configured))).catch(() => setApiConfigured(false));
     }
     void hydrate();
     return () => { cancelled = true; };
@@ -865,13 +896,12 @@ export default function Home() {
 
   useEffect(() => {
     if (!clerkLoaded || !hydrated) return;
-    const isAppPath = window.location.pathname === "/app" || window.location.pathname.startsWith("/app/");
     if (currentAccount && !isAppPath) {
       window.location.replace(TAB_PATHS[tab]);
       return;
     }
     if (!clerkSignedIn && !currentAccount && isAppPath) window.location.replace("/?signin=1");
-  }, [clerkLoaded, clerkSignedIn, currentAccount, hydrated, tab]);
+  }, [clerkLoaded, clerkSignedIn, currentAccount, hydrated, isAppPath, tab]);
 
   useEffect(() => {
     const syncTabFromUrl = () => setTab(tabFromPathname(window.location.pathname));
@@ -898,17 +928,25 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated || !cloudWorkspaceReady || !isCloudAccount(currentAccount)) return;
+    const payload = JSON.stringify({ state: { account: currentAccount, register, changes, history, today: todayReviews, schedule, lastRefresh } });
+    // The first payload after loading is what the server just returned, so don't write it back.
+    if (lastSavedWorkspaceRef.current === null) {
+      lastSavedWorkspaceRef.current = payload;
+      return;
+    }
+    if (payload === lastSavedWorkspaceRef.current) return;
     const timer = window.setTimeout(async () => {
       const response = await fetch("/api/workspace", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: { account: currentAccount, register, changes, history, today: todayReviews, schedule, lastRefresh } }),
+        body: payload,
       });
       const result = await response.json() as { error?: string; workspace?: { plan: BillingPlan; planName: string; subscriptionStatus: string; abnLimit: number } };
       if (!response.ok) {
         setNotice(result.error || "Your workspace could not be saved.");
         return;
       }
+      lastSavedWorkspaceRef.current = payload;
       if (result.workspace) setCurrentAccount((account) => account ? { ...account, ...result.workspace } : account);
     }, 450);
     return () => window.clearTimeout(timer);
@@ -1431,7 +1469,7 @@ export default function Home() {
     }
     const outcomes = await mapWithConcurrency(selection.accepted, 2, async (file): Promise<ContractDocument | null> => {
       try {
-        const read = await readContract(file, true);
+        const read = await readContract(file, vlmConfigured);
         const text = read.text;
         const id = crypto.randomUUID();
         const abns = extractAbns(text);
@@ -1909,22 +1947,19 @@ export default function Home() {
     if (!register.length || !currentAccount) return;
     setBusy(true);
     setNotice(`Updating ${register.length} record${register.length === 1 ? "" : "s"}…`);
-    const refreshed: AbnRecord[] = [];
-    const checkedRecords: AbnRecord[] = [];
-    const logs: ChangeLog[] = [];
-    for (let index = 0; index < register.length; index += 1) {
-      const previous = register[index];
+    // Look records up a few at a time instead of one by one; results keep register order.
+    const outcomes = await mapWithConcurrency(register, 4, async (previous) => {
       try {
         const current = { ...(await lookupAbn(previous.abn)), bankDetails: previous.bankDetails };
-        if (previous.source === "official" && current.source === "official") {
-          logs.push(...compareRecord(previous, current, trigger));
-        }
-        refreshed.push(current);
-        checkedRecords.push(current);
+        const recordLogs = previous.source === "official" && current.source === "official" ? compareRecord(previous, current, trigger) : [];
+        return { record: current, checked: true, logs: recordLogs };
       } catch {
-        refreshed.push(previous);
+        return { record: previous, checked: false, logs: [] as ChangeLog[] };
       }
-    }
+    });
+    const refreshed = outcomes.map((outcome) => outcome.record);
+    const checkedRecords = outcomes.filter((outcome) => outcome.checked).map((outcome) => outcome.record);
+    const logs = outcomes.flatMap((outcome) => outcome.logs);
     const refreshedAt = new Date().toISOString();
     setRegister(refreshed);
     addHistoryEntries(checkedRecords, "Register update");
@@ -2036,7 +2071,12 @@ export default function Home() {
     setNotice("Update settings saved.");
   }
 
-  if (!hydrated) return <div className="app-loading">Loading ABN Guard…</div>;
+  // Keep the loading screen up during auth transitions instead of briefly rendering the landing
+  // page (or the workspace on "/") right before a redirect or a session reload.
+  const clerkSessionPending = clerkLoaded && clerkSignedIn && !currentAccount && hydratedForClerk !== true;
+  const redirectingToWorkspace = Boolean(currentAccount) && !isAppPath;
+  const redirectingToSignIn = !currentAccount && isAppPath && (!clerkLoaded || !clerkSignedIn);
+  if (!hydrated || clerkSessionPending || redirectingToWorkspace || redirectingToSignIn) return <div className="app-loading">Loading ABN Guard…</div>;
 
   if (!currentAccount) {
     const openAuth = (mode: "signin" | "register") => {

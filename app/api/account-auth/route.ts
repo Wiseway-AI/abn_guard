@@ -69,7 +69,7 @@ export async function POST(request: Request) {
     const body = (await request.json()) as { username?: string; password?: string };
     const username = clean(body.username).toLowerCase();
     const password = typeof body.password === "string" ? body.password : "";
-    const rateLimit = await loginRateLimit(request, "managed_signin", username, 8, 15 * 60);
+    const rateLimit = await loginRateLimit(request, "managed_signin", username, 8, 15 * 60, 24);
     if (!rateLimit.allowed) {
       await recordLoginFailure(request, "managed account", username, rateLimit.actorHash, true);
       return Response.json({ error: "Too many sign-in attempts. Try again later." }, { status: 429 });
