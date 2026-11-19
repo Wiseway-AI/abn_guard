@@ -7,3 +7,9 @@ node_modules
 .wrangler
 coverage
 npm-debug.log*
+# Not needed in the image; keeping them out also avoids busting the build cache.
+tests
+docs
+examples
+*.md
+tsconfig.tsbuildinfo
