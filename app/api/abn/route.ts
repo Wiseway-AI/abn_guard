@@ -81,6 +81,65 @@ function currentRange<T extends { to: string }>(items: T[]) {
   return items.find((item) => !item.to) ?? items[0];
 }
 
+
+const ABR_TIMEOUT_MS = 10_000;
+// ABR data changes rarely; a short cache absorbs repeat lookups of the same ABN within a batch
+// or across workspaces without hiding changes from weekly monitoring.
+const OFFICIAL_CACHE_TTL_MS = 15 * 60 * 1000;
+const OFFICIAL_CACHE_MAX_ENTRIES = 2_000;
+const officialCache = new Map<string, { record: Record<string, unknown>; expiresAt: number }>();
+
+async function fetchOfficialRecord(abn: string, guid: string): Promise<{ record: Record<string, unknown> } | { error: string }> {
+  const url = new URL("https://abr.business.gov.au/abrxmlsearch/AbrXmlSearch.asmx/SearchByABNv202001");
+  url.searchParams.set("searchString", abn);
+  url.searchParams.set("includeHistoricalDetails", "Y");
+  url.searchParams.set("authenticationGuid", guid);
+  const upstream = await fetch(url, { headers: { Accept: "text/xml" }, signal: AbortSignal.timeout(ABR_TIMEOUT_MS) });
+  if (!upstream.ok) throw new Error(`ABN Lookup returned ${upstream.status}`);
+  const xml = await upstream.text();
+  const exception = xmlValue(xml, "exceptionDescription") || xmlValue(xml, "exceptionMessage");
+  if (exception) return { error: exception };
+  const entity = xmlValue(xml, "businessEntity202001") ? xml.match(/<businessEntity202001(?:\s[^>]*)?>([\s\S]*?)<\/businessEntity202001>/i)?.[1] ?? "" : "";
+  if (!entity) throw new Error("Could not parse the ABN Lookup historical response");
+
+  const entityNames = [
+    ...xmlBlocks(entity, "mainName").map((block) => range(block, xmlValue(block, "organisationName"))),
+    ...xmlBlocks(entity, "legalName").map((block) => range(block, [xmlValue(block, "givenName"), xmlValue(block, "otherGivenName"), xmlValue(block, "familyName")].filter(Boolean).join(" "))),
+  ].filter((item) => item.value);
+  const abnStatuses = xmlBlocks(entity, "entityStatus").map((block) => range(block, xmlValue(block, "entityStatusCode"))).filter((item) => item.value);
+  const gstRegistrations = xmlBlocks(entity, "goodsAndServicesTax").map((block) => range(block, "Registered"));
+  const locations = xmlBlocks(entity, "mainBusinessPhysicalAddress").map((block) => range(block, [xmlValue(block, "stateCode"), xmlValue(block, "postcode")].filter(Boolean).join(" "))).filter((item) => item.value);
+  const entityType = xmlValue(xmlBlocks(entity, "entityType")[0] ?? "", "entityDescription");
+  const currentName = currentRange(entityNames);
+  const currentStatus = currentRange(abnStatuses);
+  const currentGst = gstRegistrations.find((item) => !item.to);
+  const currentLocation = currentRange(locations);
+  const [state = "", postcode = ""] = (currentLocation?.value ?? "").split(/\s+/, 2);
+
+  return { record: {
+    abn,
+    entityName: currentName?.value ?? "",
+    status: currentStatus?.value || "Unknown",
+    statusFrom: currentStatus?.from ?? "",
+    gstRegistered: Boolean(currentGst),
+    gstFrom: currentGst?.from ?? "",
+    entityType,
+    state,
+    postcode,
+    lastChecked: new Date().toISOString(),
+    source: "official",
+    officialHistory: {
+      entityNames,
+      abnStatuses,
+      gstRegistrations,
+      locations,
+      entityType,
+      recordLastUpdated: effectiveDate(xmlValue(entity, "recordLastUpdatedDate")),
+      retrievedAt: xmlValue(xml, "dateTimeRetrieved"),
+    },
+  } };
+}
+
 export async function GET() {
   return Response.json(
     { configured: Boolean(clean(process.env.ABN_LOOKUP_GUID)) },
@@ -129,54 +188,14 @@ export async function POST(request: Request) {
       return Response.json({ ...demo, lastChecked: new Date().toISOString(), source: "demo" });
     }
 
-    const url = new URL("https://abr.business.gov.au/abrxmlsearch/AbrXmlSearch.asmx/SearchByABNv202001");
-    url.searchParams.set("searchString", abn);
-    url.searchParams.set("includeHistoricalDetails", "Y");
-    url.searchParams.set("authenticationGuid", guid);
-    const upstream = await fetch(url, { headers: { Accept: "text/xml" } });
-    if (!upstream.ok) throw new Error(`ABN Lookup returned ${upstream.status}`);
-    const xml = await upstream.text();
-    const exception = xmlValue(xml, "exceptionDescription") || xmlValue(xml, "exceptionMessage");
-    if (exception) return Response.json({ error: exception }, { status: 400 });
-    const entity = xmlValue(xml, "businessEntity202001") ? xml.match(/<businessEntity202001(?:\s[^>]*)?>([\s\S]*?)<\/businessEntity202001>/i)?.[1] ?? "" : "";
-    if (!entity) throw new Error("Could not parse the ABN Lookup historical response");
-
-    const entityNames = [
-      ...xmlBlocks(entity, "mainName").map((block) => range(block, xmlValue(block, "organisationName"))),
-      ...xmlBlocks(entity, "legalName").map((block) => range(block, [xmlValue(block, "givenName"), xmlValue(block, "otherGivenName"), xmlValue(block, "familyName")].filter(Boolean).join(" "))),
-    ].filter((item) => item.value);
-    const abnStatuses = xmlBlocks(entity, "entityStatus").map((block) => range(block, xmlValue(block, "entityStatusCode"))).filter((item) => item.value);
-    const gstRegistrations = xmlBlocks(entity, "goodsAndServicesTax").map((block) => range(block, "Registered"));
-    const locations = xmlBlocks(entity, "mainBusinessPhysicalAddress").map((block) => range(block, [xmlValue(block, "stateCode"), xmlValue(block, "postcode")].filter(Boolean).join(" "))).filter((item) => item.value);
-    const entityType = xmlValue(xmlBlocks(entity, "entityType")[0] ?? "", "entityDescription");
-    const currentName = currentRange(entityNames);
-    const currentStatus = currentRange(abnStatuses);
-    const currentGst = gstRegistrations.find((item) => !item.to);
-    const currentLocation = currentRange(locations);
-    const [state = "", postcode = ""] = (currentLocation?.value ?? "").split(/\s+/, 2);
-
-    return Response.json({
-      abn,
-      entityName: currentName?.value ?? "",
-      status: currentStatus?.value || "Unknown",
-      statusFrom: currentStatus?.from ?? "",
-      gstRegistered: Boolean(currentGst),
-      gstFrom: currentGst?.from ?? "",
-      entityType,
-      state,
-      postcode,
-      lastChecked: new Date().toISOString(),
-      source: "official",
-      officialHistory: {
-        entityNames,
-        abnStatuses,
-        gstRegistrations,
-        locations,
-        entityType,
-        recordLastUpdated: effectiveDate(xmlValue(entity, "recordLastUpdatedDate")),
-        retrievedAt: xmlValue(xml, "dateTimeRetrieved"),
-      },
-    });
+    const cached = officialCache.get(abn);
+    if (cached && cached.expiresAt > Date.now()) return Response.json(cached.record);
+    const result = await fetchOfficialRecord(abn, guid);
+    if ("error" in result) return Response.json({ error: result.error }, { status: 400 });
+    officialCache.delete(abn);
+    officialCache.set(abn, { record: result.record, expiresAt: Date.now() + OFFICIAL_CACHE_TTL_MS });
+    if (officialCache.size > OFFICIAL_CACHE_MAX_ENTRIES) officialCache.delete(officialCache.keys().next().value!);
+    return Response.json(result.record);
   } catch (error) {
     await recordRouteError(request, "abn_lookup_error", error);
     return Response.json({ error: error instanceof Error ? error.message : "ABN lookup failed" }, { status: 500 });

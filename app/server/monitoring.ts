@@ -19,10 +19,23 @@ function limited(value: string, length: number) {
   return value.replace(/[\r\n\t]+/g, " ").trim().slice(0, length);
 }
 
-function clientAddress(request: Request) {
-  return request.headers.get("CF-Connecting-IP")
-    || request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim()
-    || "unknown";
+function stripPort(address: string) {
+  const value = address.trim();
+  if (value.startsWith("[")) return value.slice(1, value.indexOf("]") > 0 ? value.indexOf("]") : undefined);
+  // CloudFront-Viewer-Address is "ip:port" for IPv4 and IPv6 alike; drop the trailing port.
+  const lastColon = value.lastIndexOf(":");
+  return lastColon > 0 && /^\d+$/.test(value.slice(lastColon + 1)) ? value.slice(0, lastColon) : value;
+}
+
+// Traffic arrives as viewer -> CloudFront -> ALB -> ECS. Client-supplied headers such as the first
+// X-Forwarded-For entry can be forged, so only use values appended by our own proxies.
+export function clientAddress(request: Request) {
+  const viewerAddress = request.headers.get("CloudFront-Viewer-Address");
+  if (viewerAddress?.trim()) return stripPort(viewerAddress);
+  const forwarded = (request.headers.get("X-Forwarded-For") ?? "").split(",").map((part) => part.trim()).filter(Boolean);
+  // CloudFront appends the viewer address and the ALB appends the CloudFront edge address.
+  if (forwarded.length >= 2) return forwarded[forwarded.length - 2];
+  return forwarded[0] || "unknown";
 }
 
 export function errorMessage(error: unknown) {
@@ -36,18 +49,28 @@ export function maskedIdentifier(value: string) {
   return clean ? `${clean.slice(0, 2)}***` : "unknown";
 }
 
-export async function monitoringActorKey(request: Request, identifier = "") {
+async function hmacKey(value: string) {
   const secret = process.env.SESSION_SECRET?.trim() || "abn-guard-monitoring";
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const value = `${clientAddress(request)}:${identifier.trim().toLowerCase()}`;
   const bytes = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 32);
 }
 
-export async function loginRateLimit(request: Request, scope: string, identifier: string, limit = 10, windowSeconds = 15 * 60) {
+export async function monitoringActorKey(request: Request, identifier = "") {
+  return hmacKey(`${clientAddress(request)}:${identifier.trim().toLowerCase()}`);
+}
+
+export async function loginRateLimit(request: Request, scope: string, identifier: string, limit = 10, windowSeconds = 15 * 60, accountLimit = 0) {
   const actorHash = await monitoringActorKey(request, identifier);
   try {
     const result = await consumeRateLimit(scope, actorHash, limit, windowSeconds);
+    // Also cap attempts per account regardless of source address, so rotating IPs cannot
+    // grant unlimited password guesses against one username or email.
+    if (accountLimit > 0) {
+      const accountHash = await hmacKey(`account:${identifier.trim().toLowerCase()}`);
+      const accountResult = await consumeRateLimit(`${scope}:account`, accountHash, accountLimit, windowSeconds);
+      if (!accountResult.allowed) return { ...accountResult, actorHash };
+    }
     return { ...result, actorHash };
   } catch {
     // Authentication already depends on PostgreSQL for public accounts. Managed beta

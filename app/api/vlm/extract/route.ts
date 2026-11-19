@@ -1,11 +1,14 @@
 import { consumeRateLimit } from "../../../server/database.ts";
 import { recordRouteError } from "../../../server/monitoring.ts";
+import { BodyTooLargeError, readJsonBody } from "../../../server/request-body.ts";
 import { managedSessionFromRequest, sessionFromRequest } from "../../../server/session.ts";
 import { normalizeVlmExtraction, VLM_MAX_PAGES } from "../../../vlm-document.ts";
 import { QWEN3_VL_ABN_SYSTEM_PROMPT } from "../../../vlm-prompt.ts";
 
 const MAX_TOTAL_BASE64_CHARACTERS = 18_000_000;
 const MAX_EXISTING_TEXT_CHARACTERS = 12_000;
+// Base64 page images plus the text excerpt and JSON framing.
+const MAX_BODY_BYTES = MAX_TOTAL_BASE64_CHARACTERS + 1_000_000;
 
 type PageImage = {
   pageNumber: number;
@@ -90,7 +93,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const body = await request.json() as { fileName?: unknown; existingText?: unknown; pages?: unknown };
+    const body = await readJsonBody<{ fileName?: unknown; existingText?: unknown; pages?: unknown }>(request, MAX_BODY_BYTES);
     const pages = parsePageImages(body.pages);
     const fileName = clean(body.fileName).slice(0, 180) || "document.pdf";
     const existingText = clean(body.existingText).slice(0, MAX_EXISTING_TEXT_CHARACTERS);
@@ -133,6 +136,7 @@ export async function POST(request: Request) {
     if (!extraction.entities.length && !extraction.bankDetails) throw new Error("The VLM did not find any verifiable document fields.");
     return Response.json({ extraction });
   } catch (error) {
+    if (error instanceof BodyTooLargeError) return Response.json({ error: "The rendered PDF pages are too large for VLM processing." }, { status: 413 });
     await recordRouteError(request, "vlm_extract_error", error);
     const message = error instanceof Error ? error.message : "VLM document extraction failed.";
     const clientError = /Invalid|Unsupported|between 1|too large/i.test(message);
