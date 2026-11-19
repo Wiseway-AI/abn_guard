@@ -76,7 +76,8 @@ test("keeps the active VLM implementation server-side without exposing credentia
   ]);
 
   assert.match(page, /assessPdfText/);
-  assert.match(page, /readContract\(file, true\)/);
+  // PDFs always go through the VLM when it is configured; skip the render and upload when it is not.
+  assert.match(page, /readContract\(file, vlmConfigured\)/);
   assert.doesNotMatch(page, /if \(!assessment\.needsVlm\) return \{ text: localText, processing: "browser"/);
   assert.match(page, /toDataURL\("image\/jpeg", 0\.72\)/);
   assert.doesNotMatch(page, /Private VLM fallback|VLM fallback awaiting connection/);
