@@ -2,6 +2,7 @@ import { consumeRateLimit } from "../../../server/database.ts";
 import { recordRouteError } from "../../../server/monitoring.ts";
 import { BodyTooLargeError, readJsonBody } from "../../../server/request-body.ts";
 import { managedSessionFromRequest, sessionFromRequest } from "../../../server/session.ts";
+import { isOpenAiEndpoint, vlmConfigured } from "../../../server/vlm-config.ts";
 import { normalizeVlmExtraction, VLM_MAX_PAGES } from "../../../vlm-document.ts";
 import { QWEN3_VL_ABN_SYSTEM_PROMPT } from "../../../vlm-prompt.ts";
 
@@ -20,8 +21,15 @@ function clean(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function configured() {
-  return Boolean(clean(process.env.VLM_API_URL));
+// A short excerpt of the provider's error message, for the server log.
+async function upstreamErrorDetail(response: Response) {
+  try {
+    const payload = await response.json() as { error?: { message?: unknown } };
+    const message = clean(payload?.error?.message).slice(0, 200);
+    return message;
+  } catch {
+    return "";
+  }
 }
 
 function parsePageImages(value: unknown): PageImage[] {
@@ -72,7 +80,7 @@ function parseModelJson(payload: unknown) {
 
 export async function GET() {
   return Response.json(
-    { configured: configured(), mode: "openai-compatible", maxPages: VLM_MAX_PAGES },
+    { configured: vlmConfigured(), mode: "openai-compatible", maxPages: VLM_MAX_PAGES },
     { headers: { "Cache-Control": "no-store, max-age=0" } },
   );
 }
@@ -82,7 +90,7 @@ export async function POST(request: Request) {
     const cloudSession = await sessionFromRequest(request);
     const managedSession = cloudSession ? null : await managedSessionFromRequest(request);
     if (!cloudSession && !managedSession) return Response.json({ error: "Sign in to use VLM document extraction." }, { status: 401 });
-    if (!configured()) return Response.json({ error: "VLM extraction is not configured." }, { status: 503 });
+    if (!vlmConfigured()) return Response.json({ error: "VLM extraction is not configured." }, { status: 503 });
 
     const actorKey = cloudSession ? `workspace:${cloudSession.workspace.id}` : `managed:${managedSession!.managedAccountId}`;
     const rateLimit = await consumeRateLimit("vlm_extract", actorKey, 200, 60 * 60);
@@ -106,31 +114,47 @@ export async function POST(request: Request) {
       content.push({ type: "image_url", image_url: { url: `data:${page.mimeType};base64,${page.data}`, detail: "high" } });
     });
 
-    const upstreamBody = {
-      model: clean(process.env.VLM_MODEL) || "qwen3-vl:4b",
-      temperature: 0,
-      max_tokens: 1600,
-      reasoning_effort: "none",
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: QWEN3_VL_ABN_SYSTEM_PROMPT },
-        { role: "user", content },
-      ],
-    };
+    const apiUrl = clean(process.env.VLM_API_URL);
+    const messages = [
+      { role: "system", content: QWEN3_VL_ABN_SYSTEM_PROMPT },
+      { role: "user", content },
+    ];
+    const upstreamBody = isOpenAiEndpoint(apiUrl)
+      // Current OpenAI models (including reasoning ones) reject max_tokens and a non-default temperature,
+      // and spend completion tokens on reasoning, so leave headroom for the JSON answer.
+      ? {
+          model: clean(process.env.VLM_MODEL),
+          max_completion_tokens: 8000,
+          response_format: { type: "json_object" },
+          messages,
+        }
+      : {
+          model: clean(process.env.VLM_MODEL) || "qwen3-vl:4b",
+          temperature: 0,
+          max_tokens: 1600,
+          reasoning_effort: "none",
+          response_format: { type: "json_object" },
+          messages,
+        };
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json",
-      "ngrok-skip-browser-warning": "true",
     };
+    if (!isOpenAiEndpoint(apiUrl)) headers["ngrok-skip-browser-warning"] = "true";
     const apiKey = clean(process.env.VLM_API_KEY);
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-    const upstream = await fetch(clean(process.env.VLM_API_URL), {
+    const upstream = await fetch(apiUrl, {
       method: "POST",
       headers,
       body: JSON.stringify(upstreamBody),
       signal: AbortSignal.timeout(180_000),
     });
-    if (!upstream.ok) throw new Error(`VLM service returned ${upstream.status}.`);
+    if (!upstream.ok) {
+      // The provider's reason (unknown model, unsupported parameter, quota) goes to the server log only:
+      // auth errors can echo a masked key, so the client just gets the status.
+      console.error("vlm_upstream_error", upstream.status, await upstreamErrorDetail(upstream));
+      throw new Error(`VLM service returned ${upstream.status}.`);
+    }
     const payload = await upstream.json();
     const extraction = normalizeVlmExtraction(parseModelJson(payload));
     if (!extraction.entities.length && !extraction.bankDetails) throw new Error("The VLM did not find any verifiable document fields.");

@@ -1,5 +1,6 @@
 import { loadWorkspace, publicWorkspace, registerUsage } from "../../../server/database";
 import { sessionFromRequest } from "../../../server/session";
+import { vlmConfigured } from "../../../server/vlm-config";
 
 export async function GET(request: Request) {
   const session = await sessionFromRequest(request);
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   // Service flags ride along with the session so the client needs no separate config requests.
   const services = {
     abnConfigured: Boolean(process.env.ABN_LOOKUP_GUID?.trim()),
-    vlmConfigured: Boolean(process.env.VLM_API_URL?.trim()),
+    vlmConfigured: vlmConfigured(),
   };
   const headers = { "Cache-Control": "no-store, max-age=0" };
   if (!session) return Response.json({ authenticated: false, googleConfigured, googleClientId, ...services }, { headers });
