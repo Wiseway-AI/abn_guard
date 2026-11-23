@@ -90,6 +90,9 @@ test("keeps the active VLM implementation server-side without exposing credentia
   assert.match(route, /reasoning_effort: "none"/);
   assert.match(route, /response_format: \{ type: "json_object" \}/);
   assert.match(route, /max_tokens: 1600/);
+  // OpenAI endpoints get parameters current models accept.
+  assert.match(route, /isOpenAiEndpoint\(apiUrl\)/);
+  assert.match(route, /max_completion_tokens: 8000/);
   assert.match(route, /process\.env\.VLM_API_URL/);
   assert.match(route, /ngrok-skip-browser-warning/);
   assert.match(route, /consumeRateLimit\("vlm_extract"/);

@@ -14,6 +14,18 @@ VLM_API_KEY=optional-token
 
 `VLM_API_URL` must be an HTTP(S) endpoint reachable by the ECS task. Keep `VLM_API_KEY` server-side in AWS Secrets Manager.
 
+### OpenAI
+
+```dotenv
+VLM_API_URL=https://api.openai.com/v1/chat/completions
+VLM_MODEL=<an OpenAI model ID with image input>
+VLM_API_KEY=sk-...
+```
+
+When `VLM_API_URL` is on `api.openai.com`, `VLM_MODEL` is required and the request uses `max_completion_tokens` instead of `max_tokens`, omits `temperature` and `reasoning_effort`, and drops the ngrok header. Rendered invoice pages, including bank details, are then sent to OpenAI.
+
+In AWS, all three keys live in the environment's application secret and are injected when the Terraform switch `vlm_enabled` is on. Populate the secret before enabling the switch: a task whose secret is missing a referenced key fails to start.
+
 ## Request contract
 
 The endpoint receives an OpenAI-compatible chat-completions request. The user message contains short extracted text plus up to eight JPEG page images as `image_url` data URLs. ABN Guard adds `ngrok-skip-browser-warning: true` and, when configured, `Authorization: Bearer <VLM_API_KEY>`.
